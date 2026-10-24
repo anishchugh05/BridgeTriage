@@ -14,6 +14,7 @@ SCHEMA = [
     "deck", "super", "sub", "worst_rating", "insp_freq_months",
     "fracture_critical", "underwater", "year_recon", "rebuilt",
     "lat", "lon", "carries", "crosses", "improvement_cost",
+    "insp_date",
 ]
 
 COUNTIES = ["Middlesex", "Worcester", "Essex", "Suffolk", "Norfolk", "Hampden"]
@@ -57,6 +58,7 @@ def make_row(i):
         "carries": f"Route {random.randint(1, 495)}",
         "crosses": random.choice(["River", "Stream", "Railroad", "Highway"]),
         "improvement_cost": random.choice([0, 0, random.randint(50, 5000) * 1000]),
+        "insp_date": pd.Timestamp(year=2021, month=random.randint(1, 12), day=1),
     }
 
 def main():

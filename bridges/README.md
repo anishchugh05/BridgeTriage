@@ -16,11 +16,12 @@ Load with pandas:
     import pandas as pd
     panel = pd.read_parquet("bridges/panel.parquet")
 
-## Schema (20 columns, fixed order)
+## Schema (21 columns, fixed order)
 
 structure_id, year, county, material, age, adt, deck, super, sub,
 worst_rating, insp_freq_months, fracture_critical, underwater,
-year_recon, rebuilt, lat, lon, carries, crosses, improvement_cost
+year_recon, rebuilt, lat, lon, carries, crosses, improvement_cost,
+insp_date
 
 - structure_id: NBI structure number, the join key across years.
 - year: 2012, 2016, 2018, or 2022.
@@ -36,7 +37,10 @@ year_recon, rebuilt, lat, lon, carries, crosses, improvement_cost
 - rebuilt: see definition below.
 - lat, lon: decimal degrees inside Massachusetts, or null.
 - carries, crosses: what the bridge carries and what it crosses.
-- improvement_cost: bridge improvement cost (item 094).
+- improvement_cost: bridge improvement cost (item 094). Repair cost, not
+  inspection cost.
+- insp_date: date of last inspection (item 090, MMYY) as a datetime, month
+  start. Use it for time since inspection in the score.
 
 ## Definitions
 

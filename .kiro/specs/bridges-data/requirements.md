@@ -8,11 +8,15 @@ set is a fixed contract. Once published it does not change.
 
 ## Output schema (contract)
 
-These 20 columns, in this order, never renamed or dropped:
+These 21 columns, in this order, never renamed or dropped:
 
 structure_id, year, county, material, age, adt, deck, super, sub,
 worst_rating, insp_freq_months, fracture_critical, underwater,
-year_recon, rebuilt, lat, lon, carries, crosses, improvement_cost
+year_recon, rebuilt, lat, lon, carries, crosses, improvement_cost,
+insp_date
+
+insp_date is item 090 (date of last inspection, MMYY) decoded to a datetime,
+appended as column 21 so existing column positions do not shift.
 
 ## Shared definitions
 
