@@ -6,6 +6,8 @@
 
 BridgeTriage is deliberately built to resist the two most dangerous failures in public-infrastructure analytics: **invented certainty** and **quiet data leakage**. It does not treat missing condition ratings as a zero, does not use repair cost as inspection cost, does not train on future outcomes when backtesting, and does not present planning estimates as official measurements.
 
+To try it out live - https://anishchugh05-bridgetriage-appapp-mohmqv.streamlit.app
+
 ## System status
 
 | Layer | Current status | What that means |
