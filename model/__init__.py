@@ -11,7 +11,14 @@ Public API (see .kiro/steering/contract.md):
 
 from .data import FOUR_YEAR_PAIRS, load_panel
 from .materials import MATERIAL_NAMES, material_name
-from .score import DeclineRates, LogisticModel, fit_decline, fit_logistic, score
+from .score import (
+    DeclineRates,
+    LogisticModel,
+    fit_decline,
+    fit_logistic,
+    months_since_insp,
+    score,
+)
 from .target import is_safety_drop, is_safety_drop_series
 
 __all__ = [
@@ -24,6 +31,7 @@ __all__ = [
     "FOUR_YEAR_PAIRS",
     "is_safety_drop",
     "is_safety_drop_series",
+    "months_since_insp",
     "material_name",
     "MATERIAL_NAMES",
 ]

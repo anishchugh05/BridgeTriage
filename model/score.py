@@ -68,6 +68,16 @@ LOOKAHEAD_MONTHS = 12.0
 # unknown-date bridge toward the top of the ranking.
 DEFAULT_MONTHS_NO_DATE = 24.0
 
+# months_since_insp is capped so a very stale date can't dominate; NBI
+# inspection cycles are 24-48 months, so 60 is a generous ceiling.
+MONTHS_SINCE_INSP_CAP = 60.0
+
+# The NBI yearly file is a snapshot taken around the start of the data year; we
+# use April 1 of the row's year as the reference "as of" date for a start-year
+# row when computing months since its last inspection.
+NBI_SNAPSHOT_MONTH = 4
+NBI_SNAPSHOT_DAY = 1
+
 # Word-boundary crossing keywords. NBI "crosses" is free text, so match whole
 # tokens only — otherwise "RR" hits CHERRY/TERRACE and "WATER" partials leak in.
 # For the "RR" railroad token we anchor only the right side (RR\b): this matches
@@ -278,6 +288,13 @@ def _build_pairs(panel: pd.DataFrame, start: int, end: int) -> pd.DataFrame:
         else:
             age = np.nan
         adt = ra.get("adt")
+        # months since last inspection, measured to the start-year NBI snapshot
+        # (April 1 of the start year), capped at 60. Falls back to insp_freq_mo
+        # only when insp_date is missing.
+        ref = _snapshot_date(start)
+        msi, msi_known = _months_since(
+            ra.get("insp_date"), ref, ra.get("insp_freq_mo")
+        )
         records.append(
             {
                 "id": bid,
@@ -287,6 +304,8 @@ def _build_pairs(panel: pd.DataFrame, start: int, end: int) -> pd.DataFrame:
                 "cond": int(round(cond_a)),
                 "adt": float(adt) if not _isnan(adt) else np.nan,
                 "insp_freq_mo": ra.get("insp_freq_mo"),
+                "months_since_insp": msi,
+                "months_since_insp_known": msi_known,
                 "fracture_critical": bool(ra.get("fracture_critical", False)),
                 "underwater": bool(ra.get("underwater", False)),
                 "dropped": int(is_safety_drop_series(
@@ -367,57 +386,69 @@ def fit_decline(panel: pd.DataFrame, start: int, end: int) -> DeclineRates:
 LOGIT_COND_GRADES = list(range(0, 10))  # one-hot columns for grades 0..9
 
 
-def _logit_features(df: pd.DataFrame) -> np.ndarray:
-    """Build the logistic design matrix from a pairs/score frame.
-
-    Features: condition (one-hot over grades 0..9), material (one-hot, fit at
-    train time), age, log1p(ADT), insp_freq_mo, fracture_critical, underwater.
-    Material columns are supplied by the caller via ``df`` already having been
-    aligned; here we emit the numeric block and leave material one-hot to the
-    model wrapper (which knows the training vocabulary).
-    """
-    n = len(df)
-    cond = pd.to_numeric(df["cond"], errors="coerce").to_numpy()
-    cond_oh = np.zeros((n, len(LOGIT_COND_GRADES)), dtype=float)
-    for j, g in enumerate(LOGIT_COND_GRADES):
-        cond_oh[:, j] = (np.round(cond) == g).astype(float)
-
-    age = pd.to_numeric(df["age"], errors="coerce").fillna(
-        pd.to_numeric(df["age"], errors="coerce").median()
-    ).to_numpy()
-    adt = pd.to_numeric(df["adt"], errors="coerce").fillna(0.0).to_numpy()
-    log_adt = np.log1p(np.clip(adt, 0, None))
-    freq = pd.to_numeric(df["insp_freq_mo"], errors="coerce").fillna(24.0).to_numpy()
-    fc = df["fracture_critical"].astype(bool).astype(float).to_numpy()
-    uw = df["underwater"].astype(bool).astype(float).to_numpy()
-
-    numeric = np.column_stack([age, log_adt, freq, fc, uw])
-    return cond_oh, numeric
-
-
 @dataclass
 class LogisticModel:
-    """Logistic-regression drop model with the same interface as DeclineRates."""
+    """Logistic-regression drop model with the same interface as DeclineRates.
 
-    clf: object  # fitted sklearn Pipeline/LogisticRegression
+    ``use_months_since_insp`` toggles the months-since-last-inspection feature
+    so validate.py can compare the model with and without it.
+    """
+
+    clf: object  # fitted sklearn LogisticRegression
     materials: list  # training material vocabulary (for one-hot alignment)
     horizon_months: float
     age_median: float
+    use_months_since_insp: bool = True
+    feature_names: list = field(default_factory=list)
     name: str = "logistic"
 
     def _row_matrix(self, df: pd.DataFrame) -> np.ndarray:
-        cond_oh, numeric = _logit_features(df)
+        n = len(df)
+        cond = pd.to_numeric(df["cond"], errors="coerce").to_numpy()
+        cond_oh = np.zeros((n, len(LOGIT_COND_GRADES)), dtype=float)
+        for j, g in enumerate(LOGIT_COND_GRADES):
+            cond_oh[:, j] = (np.round(cond) == g).astype(float)
+
         mat = df["material"].astype("string").fillna("<NA>").to_numpy()
-        mat_oh = np.zeros((len(df), len(self.materials)), dtype=float)
+        mat_oh = np.zeros((n, len(self.materials)), dtype=float)
         index = {m: j for j, m in enumerate(self.materials)}
         for i, m in enumerate(mat):
             j = index.get(m)
             if j is not None:
                 mat_oh[i, j] = 1.0
-        return np.hstack([cond_oh, mat_oh, numeric])
 
-    def interval_prob(self, rec: dict) -> float:
-        """Horizon drop probability for a single scored row ``rec``."""
+        age = pd.to_numeric(df["age"], errors="coerce").fillna(
+            self.age_median
+        ).to_numpy()
+        adt = pd.to_numeric(df["adt"], errors="coerce").fillna(0.0).to_numpy()
+        log_adt = np.log1p(np.clip(adt, 0, None))
+        freq = pd.to_numeric(df["insp_freq_mo"], errors="coerce").fillna(
+            24.0
+        ).to_numpy()
+        fc = df["fracture_critical"].astype(bool).astype(float).to_numpy()
+        uw = df["underwater"].astype(bool).astype(float).to_numpy()
+
+        blocks = [cond_oh, mat_oh,
+                  np.column_stack([age, log_adt, freq, fc, uw])]
+        if self.use_months_since_insp:
+            msi = pd.to_numeric(
+                df.get("months_since_insp"), errors="coerce"
+            ).fillna(DEFAULT_MONTHS_NO_DATE).clip(
+                upper=MONTHS_SINCE_INSP_CAP
+            ).to_numpy()
+            blocks.append(msi.reshape(-1, 1))
+        return np.hstack(blocks)
+
+    def _build_feature_names(self) -> list:
+        names = [f"cond={g}" for g in LOGIT_COND_GRADES]
+        names += [f"material={material_name(m)}" for m in self.materials]
+        names += ["age", "log_adt", "insp_freq_mo", "fracture_critical",
+                  "underwater"]
+        if self.use_months_since_insp:
+            names.append("months_since_insp")
+        return names
+
+    def _row_from_rec(self, rec: dict, asof: pd.Timestamp) -> pd.DataFrame:
         cond = _condition(rec)
         yb = rec.get("year_built")
         year = rec.get("year")
@@ -427,7 +458,8 @@ class LogisticModel:
             age = float(rec.get("age"))
         else:
             age = self.age_median
-        df = pd.DataFrame(
+        msi, _ = _months_since(rec.get("insp_date"), asof, rec.get("insp_freq_mo"))
+        return pd.DataFrame(
             [
                 {
                     "cond": -1 if _isnan(cond) else int(round(cond)),
@@ -435,12 +467,22 @@ class LogisticModel:
                     "age": age,
                     "adt": rec.get("adt"),
                     "insp_freq_mo": rec.get("insp_freq_mo"),
+                    "months_since_insp": msi,
                     "fracture_critical": bool(rec.get("fracture_critical", False)),
                     "underwater": bool(rec.get("underwater", False)),
                 }
             ]
         )
-        X = self._row_matrix(df)
+
+    def interval_prob(self, rec: dict, asof=None) -> float:
+        """Horizon drop probability for a single scored row ``rec``.
+
+        ``asof`` sets the reference date for months_since_insp; defaults to the
+        row's NBI snapshot (April 1 of its year) when available.
+        """
+        if asof is None:
+            asof = _snapshot_date(rec.get("year")) or pd.Timestamp.now()
+        X = self._row_matrix(self._row_from_rec(rec, pd.Timestamp(asof)))
         return float(self.clf.predict_proba(X)[0, 1])
 
     def interval_prob_frame(self, df: pd.DataFrame) -> np.ndarray:
@@ -448,14 +490,20 @@ class LogisticModel:
         X = self._row_matrix(df)
         return self.clf.predict_proba(X)[:, 1]
 
+    def coefficients(self) -> pd.Series:
+        """Fitted coefficients indexed by feature name, sorted by |value|."""
+        coefs = pd.Series(self.clf.coef_[0], index=self.feature_names)
+        return coefs.reindex(coefs.abs().sort_values(ascending=False).index)
+
 
 def fit_logistic(panel: pd.DataFrame, start: int, end: int,
-                 train_ids=None) -> LogisticModel:
+                 train_ids=None, use_months_since_insp: bool = True
+                 ) -> LogisticModel:
     """Fit a logistic regression on the safety-drop target.
 
     Features: condition one-hot, material one-hot, age, log ADT, insp_freq_mo,
-    fracture_critical, underwater. Trains only on ``train_ids`` when given.
-    Reads only the ``start``/``end`` years (no lookahead).
+    fracture_critical, underwater, and (optionally) months_since_insp. Trains
+    only on ``train_ids`` when given. Reads only the ``start``/``end`` years.
     """
     from sklearn.linear_model import LogisticRegression
 
@@ -470,8 +518,9 @@ def fit_logistic(panel: pd.DataFrame, start: int, end: int,
 
     model = LogisticModel(
         clf=None, materials=materials, horizon_months=(end - start) * 12.0,
-        age_median=age_median,
+        age_median=age_median, use_months_since_insp=use_months_since_insp,
     )
+    model.feature_names = model._build_feature_names()
     X = model._row_matrix(pairs)
     y = pairs["dropped"].to_numpy()
     clf = LogisticRegression(max_iter=1000, C=1.0)
@@ -485,20 +534,40 @@ def fit_logistic(panel: pd.DataFrame, start: int, end: int,
 # --------------------------------------------------------------------------- #
 
 
+def _snapshot_date(year) -> Optional[pd.Timestamp]:
+    """April 1 of ``year`` — the NBI snapshot reference date for that row."""
+    if _isnan(year):
+        return None
+    return pd.Timestamp(year=int(year), month=NBI_SNAPSHOT_MONTH,
+                        day=NBI_SNAPSHOT_DAY)
+
+
 def _months_since(insp_date, asof: pd.Timestamp, insp_freq_mo=None):
-    """Months since the last inspection.
+    """Months since the last inspection, capped at ``MONTHS_SINCE_INSP_CAP``.
 
     Returns ``(months, date_known)``. When ``insp_date`` is missing we do NOT
     assume a long time ago (that would inflate p_worse and wrongly rank the
-    bridge near the top). Instead we assume it was inspected one required cycle
-    ago: ``insp_freq_mo`` if present, else ``DEFAULT_MONTHS_NO_DATE``.
+    bridge near the top). Instead we fall back to ``insp_freq_mo`` if present,
+    else ``DEFAULT_MONTHS_NO_DATE``, and flag ``date_known=False``.
     """
     if insp_date is None or pd.isna(insp_date):
         if insp_freq_mo is not None and not _isnan(insp_freq_mo):
-            return float(insp_freq_mo), False
-        return DEFAULT_MONTHS_NO_DATE, False
+            months = float(insp_freq_mo)
+        else:
+            months = DEFAULT_MONTHS_NO_DATE
+        return min(months, MONTHS_SINCE_INSP_CAP), False
     delta_days = (asof - pd.Timestamp(insp_date)).days
-    return max(0.0, delta_days / 30.4375), True
+    months = max(0.0, delta_days / 30.4375)
+    return min(months, MONTHS_SINCE_INSP_CAP), True
+
+
+def months_since_insp(insp_date, ref: pd.Timestamp, insp_freq_mo=None):
+    """Public helper: months from ``insp_date`` to ``ref``, capped at 60.
+
+    Thin wrapper over :func:`_months_since` with the same fallback/flag
+    semantics; shared by the logistic feature builder, Part C, and score().
+    """
+    return _months_since(insp_date, ref, insp_freq_mo)
 
 
 def _placeholder_cost(underwater: bool, fracture_critical: bool) -> float:
@@ -549,15 +618,24 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
         )
         material = rec.get("material")
 
-        # The model gives P(safety drop) over its fit horizon. Convert to a
-        # monthly hazard and re-apply over this bridge's risk window so that
-        # time since the last inspection still modulates the probability.
-        p_horizon = float(np.clip(rates.interval_prob(rec), 1e-9, 1 - 1e-9))
-        hazard = _prob_to_monthly_hazard(p_horizon, horizon)
-
+        # months since last inspection, measured to asof, capped at 60. Falls
+        # back to insp_freq_mo only if insp_date is missing (date_known=False).
         months_since, date_known = _months_since(
             rec.get("insp_date"), asof, rec.get("insp_freq_mo")
         )
+        # Make the feature available to any model that reads it from the record.
+        rec["months_since_insp"] = months_since
+
+        # The model gives P(safety drop) over its fit horizon. Convert to a
+        # monthly hazard and re-apply over this bridge's risk window so that
+        # time since the last inspection still modulates the probability.
+        try:
+            p_horizon = float(rates.interval_prob(rec, asof=asof))
+        except TypeError:
+            p_horizon = float(rates.interval_prob(rec))
+        p_horizon = float(np.clip(p_horizon, 1e-9, 1 - 1e-9))
+        hazard = _prob_to_monthly_hazard(p_horizon, horizon)
+
         months = months_since + LOOKAHEAD_MONTHS
         p_worse = 1.0 - np.exp(-hazard * months)
         p_worse = float(np.clip(p_worse, 0.0, 1.0))
@@ -613,8 +691,12 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
             bits.append("crosses " + "+".join(crossing_bits))
         if poor:
             bits.append("poor condition weight")
-        if not date_known:
-            bits.append("inspection date unknown")
+        if date_known:
+            bits.append(f"last inspected {months_since:.0f} mo ago")
+        else:
+            bits.append(
+                f"inspection date unknown (assumed {months_since:.0f} mo)"
+            )
         bits.append(f"p_worse {p_worse:.2f}")
         if used_placeholder:
             bits.append(f"placeholder cost ${insp_cost:,.0f}")
