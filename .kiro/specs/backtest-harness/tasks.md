@@ -102,17 +102,17 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R14.7_
   - Demo: `python -m pytest planner/properties.py::test_sanity_signal_zero_near_random -q`
 
-- [ ] 18. Property: base-rate calibration
+- [x] 18. Property: base-rate calibration
   - `test_base_rate_calibration()`: over 20 make_fake seeds (signal=0, noise=1), mean(worse) (safety-drop label) over the pool returned by apply_exclusion_and_label ∈ [0.12, 0.22]
   - _Requirements: R14.8_
   - Demo: `python -m pytest planner/properties.py::test_base_rate_calibration -q`
 
-- [ ] 19. Property: generator consistency
+- [x] 19. Property: generator consistency
   - `test_generator_consistency()`: for every pool bridge, pipeline-computed worse (apply_exclusion_and_label via is_safety_drop) equals the generator's drawn worse, across seeds and (signal, noise) settings
   - _Requirements: R14.9_
   - Demo: `python -m pytest planner/properties.py::test_generator_consistency -q`
 
-- [ ] 20. Property: safety-drop parity with model
+- [x] 20. Property: safety-drop parity with model
   - `test_is_safety_drop_parity()`: compare local `is_safety_drop` with `model.is_safety_drop` over all 11×11 inputs (0–9 plus NaN for start and end); SKIPPED if `model` is not importable (pytest.importorskip or skipif)
   - _Requirements: R14.10_
   - Demo: `python -m pytest planner/properties.py::test_is_safety_drop_parity -q` (reports SKIPPED until model exists)

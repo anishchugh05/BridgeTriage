@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from planner import backtest
 from planner.backtest import (
@@ -58,6 +59,7 @@ TRIPLE_PAIR_NAN_P = 0.15   # per-cell NaN probability, matches make_fake (R13.8)
 ORACLE_SLACK = 0.01        # R14.4 slack on the MEANS over seeds (per budget)
 CEILING_SEED = 0           # fixed make_fake seed for the R14.6 single ceiling run
 CEILING_BAR_MARGIN = 0.05  # R14.6 bar = realized min model/oracle ratio - margin
+BASE_RATE_BAND = (0.12, 0.22)  # R14.8 band on the MEAN pool decline rate over seeds
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REAL_PATHS = (REPO_ROOT / "data" / "MA18.txt", REPO_ROOT / "data" / "MA22.txt")
 
@@ -1309,4 +1311,225 @@ def test_sanity_signal_zero_near_random():
         f"<= BAND_K*std(d)/sqrt({n_datasets}) with BAND_K={BAND_K}, for "
         f"BOTH unweighted and weighted recall):\n"
         + "\n".join(violations) + f"\n\n{report}"
+    )
+
+# ---------------------------------------------------------------------------
+# R14.8: Base-rate calibration
+# ---------------------------------------------------------------------------
+
+def test_base_rate_calibration():
+    """Mean safety-drop rate over the pool lands in [0.12, 0.22].
+
+    **Validates: Requirements R14.8**
+
+    Over SANITY_SEEDS (20) make_fake datasets with signal=0, noise=1 —
+    where latent = BASE_RATE_LOGIT + N(0, 1), so features do not matter,
+    every bridge draws its worse label from the same marginal
+    distribution, and the R2 exclusions (rebuilt, missing-from-2022, NaN)
+    are independent of the drawn labels (R13.7) — compute per seed
+
+        rate = mean(worse) over the pool returned by
+               apply_exclusion_and_label
+
+    using the outcomes dict's worse field — the safety-drop label
+    is_safety_drop(min_2018, min_2022) computed by the pipeline (R3.2),
+    NOT the generator's pre-exclusion draws (the pipeline label equals
+    the drawn label by construction, R14.9, which is what makes this
+    measurable). The gate is the MEAN over the 20 seeds:
+
+        BASE_RATE_BAND[0] <= mean(rate) <= BASE_RATE_BAND[1]
+
+    Per-seed rates carry binomial sampling noise at FAKE_N=400 (pool
+    ~370 after exclusions) and are not individually banded; they are
+    REPORTED as a printed table alongside pool sizes and the exclusion
+    tallies (visible with pytest -s and echoed in the failure message).
+    """
+    band_lo, band_hi = BASE_RATE_BAND
+    rows = []
+    rates = []
+
+    for i in SANITY_SEEDS:
+        df_2018, df_2022, _ = make_fake(FAKE_N, seed=i, signal=0.0,
+                                        noise=1.0)
+        _, outcomes, pool_cost_info = _shared_pool(df_2018, df_2022,
+                                                   COUNTY_FEE)
+        n_pool = len(outcomes)
+        assert n_pool > 0, f"dataset {i}: candidate pool is empty"
+        n_worse = sum(o["worse"] for o in outcomes.values())
+        rate = n_worse / n_pool
+        rates.append(rate)
+        rows.append({
+            "seed": i,
+            "pool": n_pool,
+            "worse": n_worse,
+            "rate": round(rate, 4),
+            **{k: v for k, v in
+               pool_cost_info["exclusion_counts"].items()},
+        })
+
+    mean_rate = float(np.mean(rates))
+
+    table = pd.DataFrame(rows).to_string(index=False)
+    report = (
+        f"R14.8 base-rate calibration — per-seed safety-drop rates over "
+        f"{len(rates)} make_fake datasets (n={FAKE_N}, signal=0, noise=1; "
+        f"SANITY_SEEDS); rate = mean(worse) over the pool from "
+        f"apply_exclusion_and_label (safety-drop label, R3.2):\n{table}\n"
+        f"mean rate over seeds = {mean_rate:.4f}; required band "
+        f"[{band_lo}, {band_hi}] (the band gates the MEAN only; per-seed "
+        f"rates are reported, not individually banded)"
+    )
+    print(report)
+    assert band_lo <= mean_rate <= band_hi, (
+        f"R14.8: mean pool safety-drop rate {mean_rate:.4f} over "
+        f"{len(rates)} seeds outside required band [{band_lo}, {band_hi}] "
+        f"(BASE_RATE_LOGIT miscalibrated, R13.7)\n\n{report}"
+    )
+
+# ---------------------------------------------------------------------------
+# R14.9: Generator consistency
+# ---------------------------------------------------------------------------
+
+def test_generator_consistency():
+    """Pipeline worse == generator's drawn worse for every pool bridge.
+
+    **Validates: Requirements R14.9**
+
+    Over N_DATASETS make_fake datasets with the (signal, noise) REGIMES
+    cycled — deterministic top-k (signal=1, noise=0), pure noise
+    (signal=0, noise=1), and two mixed regimes, so every label-drawing
+    mode of R13.4/R13.5 is exercised — build the ONE shared candidate
+    pool via _shared_pool (load_and_validate + apply_exclusion_and_label,
+    the same deterministic pipeline run_backtest uses, R11.2) and compare,
+    for EVERY bridge in the pool:
+
+        outcomes[sid]["worse"]  — the pipeline label
+            is_safety_drop(min_2018, min_2022) (R3.2)
+
+    against
+
+        truth.loc[sid, "worse"] — the generator's drawn label
+            (top round(TARGET_RATE * n) by latent when noise=0,
+            bernoulli(p_decline) when noise>0; generator internals, R13.1)
+
+    Only pool bridges are compared: excluded bridges (rebuilt,
+    missing-from-2022) carry no pipeline label, so the property is defined
+    on the pool only (R14.9). make_fake's rating evolution constructs the
+    2022 ratings so the drawn labels are exactly consistent with
+    is_safety_drop (R13.6), which is what this property verifies end to
+    end — and what makes the R14.8 pool base rate measurable.
+
+    Coverage guards: every regime must contribute pool bridges with BOTH
+    drawn labels present (in particular the noise=0 deterministic top-k
+    mode must actually place drawn-worse bridges in the pool), and the
+    datasets must actually exercise exclusions (so the pool restriction is
+    real, not vacuous).
+    """
+    violations = []
+    bridges_checked = 0
+    n_excluded_total = 0
+    regime_bridges = {regime: 0 for regime in REGIMES}
+    regime_worse = {regime: 0 for regime in REGIMES}
+
+    for i in range(N_DATASETS):
+        signal, noise = REGIMES[i % len(REGIMES)]
+        df_2018, df_2022, truth = make_fake(FAKE_N, seed=i, signal=signal,
+                                            noise=noise)
+        _, outcomes, _ = _shared_pool(df_2018, df_2022, COUNTY_FEE)
+
+        drawn = truth["worse"]
+        assert len(outcomes) > 0, f"dataset {i}: candidate pool is empty"
+        n_excluded_total += len(truth) - len(outcomes)
+
+        for sid, o in outcomes.items():
+            bridges_checked += 1
+            regime_bridges[(signal, noise)] += 1
+            want = bool(drawn.loc[sid])
+            got = o["worse"]
+            if got:
+                regime_worse[(signal, noise)] += 1
+            if got != want:
+                violations.append(
+                    f"dataset={i} regime=(signal={signal}, noise={noise}) "
+                    f"id={sid}: pipeline worse={got} "
+                    f"(is_safety_drop(min_2018={o['min_2018']}, "
+                    f"min_2022={o['min_2022']})) != generator's drawn "
+                    f"worse={want}"
+                )
+
+    # Coverage guards: both drawn labels present in every regime's pool
+    # bridges (each regime ran on N_DATASETS // len(REGIMES) datasets).
+    for regime in REGIMES:
+        n_regime = regime_bridges[regime]
+        n_worse = regime_worse[regime]
+        assert n_regime > 0, (
+            f"regime (signal={regime[0]}, noise={regime[1]}) contributed "
+            "no pool bridges"
+        )
+        assert 0 < n_worse < n_regime, (
+            f"regime (signal={regime[0]}, noise={regime[1]}): pool bridges "
+            f"carry only one drawn label (worse={n_worse} of {n_regime}) — "
+            "both labels must be exercised"
+        )
+    assert n_excluded_total > 0, (
+        "no bridge was ever excluded — the pool restriction was never "
+        "exercised"
+    )
+
+    assert not violations, (
+        f"{len(violations)} of {bridges_checked} pool bridges across "
+        f"{N_DATASETS} datasets had a pipeline worse label different from "
+        f"the generator's drawn label (R14.9):\n"
+        + "\n".join(violations[:10])
+    )
+
+# ---------------------------------------------------------------------------
+# R14.10: Safety-drop parity with model
+# ---------------------------------------------------------------------------
+
+def test_is_safety_drop_parity():
+    """Local is_safety_drop agrees with model.is_safety_drop on every input.
+
+    **Validates: Requirements R14.10**
+
+    The harness defines is_safety_drop LOCALLY in planner/backtest.py and
+    never imports it from model (R3.4), so the two definitions can drift.
+    This parity property compares the local definition against
+    model.is_safety_drop on ALL 11x11 = 121 (start, end) inputs over
+    RATING_VALUES (integers 0-9 plus NaN, for both start and end),
+    comparing bool equality per combo. NaN inputs are part of the grid: a
+    NaN on either side yields False on both sides (NaN comparisons are
+    False; such bridges are excluded from the pool, never labeled, R3.3).
+
+    SKIPPED until model exists (R14.10): pytest.importorskip skips when
+    no model module is importable at all, and the getattr guard skips
+    when the module — or the empty model/ namespace directory — does not
+    yet define is_safety_drop. Once model.is_safety_drop exists, the
+    121-combo comparison runs for real.
+    """
+    model = pytest.importorskip(
+        "model",
+        reason="model module not importable yet; parity deferred (R14.10)",
+    )
+    model_is_safety_drop = getattr(model, "is_safety_drop", None)
+    if model_is_safety_drop is None:
+        pytest.skip(
+            "model.is_safety_drop not defined yet; parity deferred (R14.10)"
+        )
+
+    violations = []
+    for start in RATING_VALUES:
+        for end in RATING_VALUES:
+            local = bool(is_safety_drop(start, end))
+            theirs = bool(model_is_safety_drop(start, end))
+            if local != theirs:
+                violations.append(
+                    f"is_safety_drop(start={start}, end={end}): "
+                    f"local={local}, model={theirs}"
+                )
+    n_combos = len(RATING_VALUES) ** 2
+    assert not violations, (
+        f"{len(violations)} of {n_combos} (start, end) combos disagree "
+        "between the local is_safety_drop and model.is_safety_drop "
+        f"(R14.10):\n" + "\n".join(violations[:10])
     )
