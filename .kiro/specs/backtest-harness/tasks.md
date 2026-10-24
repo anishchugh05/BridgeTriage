@@ -9,7 +9,7 @@ Property tests use `RANDOM_SEEDS_TEST = range(20)` for random_avg (not 200). All
 
 ## Tasks
 
-- [ ] 1. Set up planner package and data loading
+- [x] 1. Set up planner package and data loading
   - Create `planner/__init__.py` (package marker) and `planner/backtest.py`: module docstring, module constants (BAND_K = 3, TARGET_RATE = 0.15, BASE_RATE_LOGIT placeholder, REL_TOL = 1e-9, BOOTSTRAP_REPS = 1000, BOOTSTRAP_SEED = 0, RANDOM_SEEDS = range(200), RANDOM_SEEDS_TEST = range(20), FAKE_SEEDS = range(50), SANITY_SEEDS = range(20)), imports (pandas, numpy, matplotlib)
   - Implement `load_and_validate` per Algorithm 1 (R1): column checks (no `score` column), "N"→NaN, integer 0–9 rating validation, structure_id str coercion, 2022 lookup index, ValueError on inspect_cost NaN/<=0 or adt < 0
   - _Requirements: R1_
