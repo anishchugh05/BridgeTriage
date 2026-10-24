@@ -1,6 +1,6 @@
-# Data layer for the inspection planner app. Front end only.
 # Loads the Person A panel from a relative path so it works after deploy.
 import os
+
 import pandas as pd
 import streamlit as st
 
@@ -13,8 +13,9 @@ YEARS = [2012, 2016, 2018, 2022]
 
 def _panel_path():
     real = os.path.join(BRIDGES, "panel.parquet")
-    fake = os.path.join(BRIDGES, "fake.parquet")
-    return real if os.path.exists(real) else fake
+    if not os.path.exists(real):
+        raise FileNotFoundError("The production bridge panel is unavailable.")
+    return real
 
 
 @st.cache_data(show_spinner=False)
@@ -44,7 +45,3 @@ def history(df, structure_id):
     # Ratings across all years for one bridge, sorted by year.
     h = df[df["structure_id"] == structure_id].sort_values("year")
     return h[["year", "deck", "super", "sub", "worst_rating"]].reset_index(drop=True)
-
-
-def using_fake():
-    return not os.path.exists(os.path.join(BRIDGES, "panel.parquet"))
