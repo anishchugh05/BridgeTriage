@@ -249,6 +249,43 @@ def apply_exclusion_and_label(df_2018, df_2022, index, county_fee):
     return candidates, outcomes, pool_cost_info
 
 # ---------------------------------------------------------------------------
+# Algorithm 3: Cost — one rule, two functions (R4)
+# ---------------------------------------------------------------------------
+
+def marginal_cost(county, inspect_cost, counties_seen, county_fee):
+    """Marginal cost of selecting one bridge (R4.1).
+
+    inspect_cost + county_fee when this is the FIRST selected bridge of its
+    county (county not in counties_seen), else inspect_cost: a county's fee
+    is paid at most once, and only when at least one of its bridges is
+    selected (R4.1, R4.3). This is the ONLY cost rule in the codebase —
+    pick() accumulates it incrementally and cost_accounting() iterates it
+    over a finished selection (R4.2). inspect_cost, county_fee, and budget
+    arithmetic share one unit (R4.6).
+    """
+    return inspect_cost + (county_fee if county not in counties_seen else 0.0)
+
+
+def cost_accounting(selected_ids, candidates, county_fee):
+    """Total cost of a selection, accumulated in selection order (R4.2).
+
+    Iterates selected_ids in order, accumulating marginal_cost while
+    tracking counties seen, so total_cost = sum(inspect_cost) +
+    n_unique_selected_counties * county_fee (R4.3) — NEVER
+    sum(inspect_cost + county_fee): a county's fee is paid at most once
+    (R4.6). Returns (total_cost, n_unique_selected_counties).
+    """
+    seen = set()
+    total = 0.0
+    for sid in selected_ids:
+        county = candidates.loc[sid, "county"]
+        total += marginal_cost(
+            county, candidates.loc[sid, "inspect_cost"], seen, county_fee
+        )
+        seen.add(county)
+    return total, len(seen)
+
+# ---------------------------------------------------------------------------
 # Algorithm 9: make_fake synthetic data generator (R13)
 # ---------------------------------------------------------------------------
 

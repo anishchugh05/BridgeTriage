@@ -30,7 +30,7 @@ except ValueError: print('signal=0,noise=0 rejected')"`
   - _Requirements: R2, R3, R4.4_
   - Demo: `python -c "import pandas as pd; from planner.backtest import *; a=pd.DataFrame({'structure_id':['a','b','c','d','e','f'],'county':['x','x','y','y','y','y'],'year_built':[1950,1950,1950,1950,None,1950],'adt':[10.0]*6,'deck':[5,5,5,5,5,7],'super':[5,5,5,5,5,7],'sub':[5,5,5,5,5,7],'inspect_cost':[1.0]*6}); b=pd.DataFrame({'structure_id':['a','b','c','e','f'],'deck':[4,5,5,5,5],'super':[5,5,5,5,5],'sub':[5,5,5,5,5],'rebuilt':[0,1,0,0,0]}); c,o,p=apply_exclusion_and_label(*load_and_validate(a,b),5.0); assert set(c.index)=={'a','c','f'} and o['a']['worse'] and not o['c']['worse'] and not o['f']['worse'] and p['total_cost_pool']==3+2*5 and p['exclusion_counts']['rebuilt']==1 and p['exclusion_counts']['missing_2022']==1; print('a worse (5->4 safety drop); f NOT worse (7->5 stays above 4); pool cost 13')"`
 
-- [ ] 4. Implement cost rule (marginal_cost + cost_accounting)
+- [x] 4. Implement cost rule (marginal_cost + cost_accounting)
   - `marginal_cost(county, inspect_cost, counties_seen, county_fee)` and `cost_accounting(selected_ids, candidates, county_fee)` per Algorithm 3 (R4): fee once per county, selection order; the ONLY cost logic in the codebase
   - _Requirements: R4_
   - Demo: `python -c "import pandas as pd; from planner.backtest import cost_accounting; c=pd.DataFrame({'county':['x','x','y'],'inspect_cost':[1.0,1.0,1.0]},index=['a','b','c']); t,n=cost_accounting(['a','b','c'],c,5.0); assert t==13.0 and n==2; print('cost 13.0 (1+5 +1 +1+5), 2 counties')"`
