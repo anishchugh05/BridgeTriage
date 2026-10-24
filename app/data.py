@@ -1,50 +1,72 @@
-# Data layer for the inspection planner app. Front end only.
-# Loads the Person A panel from a relative path so it works after deploy.
-import os
+"""Legacy front-end data helpers with no fabricated-data fallback.
+
+The future composition root uses the strict boundary in :mod:`model.data`.
+These helpers remain temporarily for the stale Streamlit entry point, but they
+always target the repository's real ``bridges/panel.parquet`` asset.  A missing
+or unreadable production panel therefore remains a production failure; this
+module never checks for or substitutes ``fake.parquet``.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Final
+
 import pandas as pd
 import streamlit as st
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-BRIDGES = os.path.join(ROOT, "bridges")
-
-YEARS = [2012, 2016, 2018, 2022]
+REPOSITORY_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+PANEL_PATH: Final[Path] = REPOSITORY_ROOT / "bridges" / "panel.parquet"
+YEARS: Final[tuple[int, ...]] = (2012, 2016, 2018, 2022)
 
 
-def _panel_path():
-    real = os.path.join(BRIDGES, "panel.parquet")
-    fake = os.path.join(BRIDGES, "fake.parquet")
-    return real if os.path.exists(real) else fake
+def _panel_path() -> Path:
+    """Return the sole production panel path without existence fallback."""
+
+    return PANEL_PATH
 
 
 @st.cache_data(show_spinner=False)
-def load_panel():
-    df = pd.read_parquet(_panel_path())
-    for c in ("lat", "lon", "adt", "worst_rating"):
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df
+def load_panel() -> pd.DataFrame:
+    """Read only the real repository panel and propagate read failures."""
+
+    return pd.read_parquet(_panel_path())
 
 
 @st.cache_data(show_spinner=False)
-def latest_year(df):
-    # The map and picker work on the newest year present.
-    y = int(df["year"].max())
-    out = df[df["year"] == y].copy()
-    out = out.dropna(subset=["lat", "lon"])
-    return out.reset_index(drop=True)
+def latest_year(frame: pd.DataFrame) -> pd.DataFrame:
+    """Legacy current-year map projection retained until app composition lands."""
+
+    year = int(frame["year"].max())
+    latest = frame.loc[frame["year"].eq(year)].copy(deep=True)
+    return latest.dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
-def counties(df):
-    return sorted(df["county"].dropna().unique().tolist())
+def counties(frame: pd.DataFrame) -> list[str]:
+    return sorted(frame["county"].dropna().unique().tolist())
 
 
-def history(df, structure_id):
-    # Ratings across all years for one bridge, sorted by year.
-    h = df[df["structure_id"] == structure_id].sort_values("year")
-    return h[["year", "deck", "super", "sub", "worst_rating"]].reset_index(drop=True)
+def history(frame: pd.DataFrame, structure_id: str) -> pd.DataFrame:
+    records = frame.loc[frame["structure_id"].eq(structure_id)].sort_values("year")
+    return records.loc[
+        :, ["year", "deck", "super", "sub", "worst_rating"]
+    ].reset_index(drop=True)
 
 
-def using_fake():
-    return not os.path.exists(os.path.join(BRIDGES, "panel.parquet"))
+def using_fake() -> bool:
+    """Compatibility signal: automatic fake-data use has been removed."""
+
+    return False
+
+
+__all__ = [
+    "PANEL_PATH",
+    "REPOSITORY_ROOT",
+    "YEARS",
+    "counties",
+    "history",
+    "latest_year",
+    "load_panel",
+    "using_fake",
+]

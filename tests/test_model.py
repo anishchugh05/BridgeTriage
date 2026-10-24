@@ -163,8 +163,8 @@ def test_score_output_clean(panel, rates):
     assert scored["reason"].map(lambda s: isinstance(s, str) and len(s.strip()) > 0).all()
 
 
-def test_score_uses_placeholder_when_cost_missing(rates):
-    """A missing insp_cost yields a positive cost and a reason that says so."""
+def test_score_discloses_modeled_estimate_when_cost_missing(rates):
+    """A missing insp_cost yields a positive cost and discloses its estimate."""
     row = {
         "id": "NOCOST", "year_built": 1965, "material": "Timber",
         "deck": 4.0, "super": 4.0, "sub": 5.0, "culvert": np.nan,
@@ -174,7 +174,7 @@ def test_score_uses_placeholder_when_cost_missing(rates):
     }
     scored = score(pd.DataFrame([row]), rates, asof="2018-06-01")
     assert scored.loc[0, "insp_cost"] > 0
-    assert "placeholder" in scored.loc[0, "reason"].lower()
+    assert "modeled inspection-cost estimate" in scored.loc[0, "reason"].lower()
 
 
 def test_score_handles_na_condition_culvert_fallback(rates):

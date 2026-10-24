@@ -1,15 +1,32 @@
-"""Part B — decline model and scoring.
+"""Authoritative public API for bridge data, modeling, and targets.
 
-Public API (see .kiro/steering/contract.md):
-    load_panel(path=None)              -> DataFrame (adapts Part A's panel)
-    is_safety_drop(start, end)         -> bool  (shared target, also for Part C)
-    fit_decline(panel, start, end)     -> DeclineRates (grouped model)
-    fit_logistic(panel, start, end)    -> LogisticModel
-    score(table, model, asof)          -> DataFrame[id, p_worse, consequence,
-                                                     insp_cost, score, reason]
+The strict source/scored-data boundary is implemented only in
+:mod:`model.data` and re-exported here for application and planner consumers.
+``load_panel`` remains the compatibility entry point over that same reader,
+validator, and adapter; it does not define a second schema mapping.
 """
 
-from .data import FOUR_YEAR_PAIRS, load_panel
+from .data import (
+    DEFAULT_PANEL_PATH,
+    FOUR_YEAR_PAIRS,
+    MODELED_COST_DISCLOSURE,
+    REQUIRED_YEARS,
+    SCORED_COLUMNS,
+    SOURCE_COLUMNS,
+    IdentifierReconciliationError,
+    ScoredDataError,
+    ScoredTableValidationError,
+    SourceAdaptationError,
+    SourceDataError,
+    SourceReadError,
+    SourceSchemaError,
+    adapt_source_panel,
+    load_panel,
+    read_source_panel,
+    reconcile_scored_table,
+    validate_scored_table,
+    validate_source_panel,
+)
 from .materials import MATERIAL_NAMES, material_name
 from .score import (
     DeclineRates,
@@ -22,13 +39,32 @@ from .score import (
 from .target import is_safety_drop, is_safety_drop_series
 
 __all__ = [
+    # Strict source and score boundary.
+    "DEFAULT_PANEL_PATH",
+    "SOURCE_COLUMNS",
+    "REQUIRED_YEARS",
+    "SCORED_COLUMNS",
+    "MODELED_COST_DISCLOSURE",
+    "FOUR_YEAR_PAIRS",
+    "SourceDataError",
+    "SourceReadError",
+    "SourceSchemaError",
+    "SourceAdaptationError",
+    "ScoredDataError",
+    "ScoredTableValidationError",
+    "IdentifierReconciliationError",
+    "read_source_panel",
+    "validate_source_panel",
+    "adapt_source_panel",
+    "validate_scored_table",
+    "reconcile_scored_table",
+    "load_panel",
+    # Existing model, material, and shared Safety_Drop API.
     "fit_decline",
     "fit_logistic",
     "score",
     "DeclineRates",
     "LogisticModel",
-    "load_panel",
-    "FOUR_YEAR_PAIRS",
     "is_safety_drop",
     "is_safety_drop_series",
     "months_since_insp",

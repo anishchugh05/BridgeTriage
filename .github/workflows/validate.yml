@@ -1,0 +1,65 @@
+name: Validate
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+  push:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  validate:
+    name: Python validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out submitted revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up declared Python version
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Validate dependency manifest syntax
+        run: >-
+          python -c "from scripts.validate_dependencies import
+          validate_manifest_contract; validate_manifest_contract()"
+
+      - name: Install exact runtime lock
+        run: python -m pip install --require-hashes -r requirements.txt
+
+      - name: Install exact test lock
+        run: python -m pip install --require-hashes -r requirements-test.txt
+
+      - name: Validate installed dependencies and imports
+        env:
+          PIP_NO_INDEX: "1"
+        run: python scripts/validate_dependencies.py
+
+      - name: Run complete test suite once
+        env:
+          PIP_NO_INDEX: "1"
+        run: python -m pytest
+
+      - name: Run bounded production smoke check once
+        timeout-minutes: 3
+        env:
+          BRIDGE_APP_MODE: production
+          PIP_NO_INDEX: "1"
+        run: python scripts/smoke_app.py
