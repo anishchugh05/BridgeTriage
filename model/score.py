@@ -642,9 +642,15 @@ def _human_reason(*, material, age, condition, rail, water, months_since,
     public could read. Kept alongside (not replacing) the technical string.
     """
     mat = material_name(material)
-    age_phrase = "" if _isnan(age) else f", built about {int(age)} years ago"
     grade = int(round(condition))
     chance = int(round(p_worse * 100))
+    if _isnan(age):
+        lead = f"This {mat.lower()} bridge is currently rated {grade} out of 9."
+    else:
+        lead = (
+            f"This {mat.lower()} bridge, built about {int(age)} years ago, is "
+            f"currently rated {grade} out of 9."
+        )
 
     crossing = ""
     if rail and water:
@@ -672,8 +678,7 @@ def _human_reason(*, material, age, condition, rail, water, months_since,
     )
 
     return (
-        f"This {mat.lower()} bridge{age_phrase} is currently rated {grade} "
-        f"out of 9. We estimate about a {chance}% chance it has quietly slipped "
+        f"{lead} We estimate about a {chance}% chance it has quietly slipped "
         f"into poor condition. {recency}{crossing} {cost_phrase} "
         "All figures are planning estimates, not official measurements."
     )
