@@ -1,234 +1,431 @@
-# Inspection planner front end. Front end only, reads Person A data and the
-# B and C functions. Falls back to stubs when the real code is not present.
+from pathlib import Path
+import sys
+
+# Streamlit executes this nested file with ``app/`` as the script directory.
+# Establish the checked-out repository as the import root before any absolute
+# application, model, or planner package import.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_REPOSITORY_ROOT_TEXT = str(REPOSITORY_ROOT)
+if _REPOSITORY_ROOT_TEXT not in sys.path:
+    sys.path.insert(0, _REPOSITORY_ROOT_TEXT)
+
 import os
+from collections.abc import Callable, Mapping
+from typing import Any, TypeVar, cast
+
 import pandas as pd
-import pydeck as pdk
 import streamlit as st
 
-from data import load_panel, latest_year, counties, history, using_fake
-from style import inject_css
+from app.config import RuntimeMode, resolve_runtime_mode, validate_provider_mode
+from app.errors import (
+    ERROR_REGISTRY,
+    ErrorCategory,
+    Outcome,
+    log_failure_once,
+    render_user_safe_error,
+    run_component,
+    user_safe_error,
+)
+from app.state import (
+    ACTIVE_BUDGET_STEP,
+    ACTIVE_BUDGET_VALUES,
+    INITIAL_ACTIVE_BUDGET,
+    MAX_ACTIVE_BUDGET,
+    MIN_ACTIVE_BUDGET,
+    SelectionContext,
+    ViewContext,
+    build_selection_context,
+    get_active_budget,
+)
+from app.style import inject_css
+from app.views import (
+    BACKTEST_SECTION_LABEL,
+    render_backtest,
+    render_bridge_detail,
+    render_budget,
+    render_current_ranking,
+    render_export,
+    render_hazards,
+    render_map,
+    render_methods,
+)
 
-# Real code first, stubs on any import failure. No edits needed when B and C land.
-try:
-    from model.score import score
-    from planner.pick import pick, backtest
-    USING_STUBS = False
-except Exception:
-    from stubs import score, pick, backtest
-    USING_STUBS = True
 
-st.set_page_config(page_title="MA Bridge Inspection Planner", layout="wide")
-inject_css()
+T = TypeVar("T")
+PAGE_TITLE = "Massachusetts Bridge Inspection Planner"
+BUDGET_WIDGET_KEY = "active_budget_widget"
+COUNTY_WIDGET_KEY = "map_county_widget"
+ALL_COUNTIES = "All"
+BACKTEST_BUDGETS = tuple(ACTIVE_BUDGET_VALUES)
 
-INFOBRIDGE = "https://infobridge.fhwa.dot.gov/Data"
-
-
-@st.cache_data(show_spinner=False)
-def scored_latest():
-    panel = load_panel()
-    cur = latest_year(panel)
-    sc = score(cur)
-    merged = cur.merge(sc, on="structure_id", how="left")
-    merged["hazard"] = merged["fracture_critical"].fillna(False) | \
-        merged["underwater"].fillna(False)
-    return panel, merged
+_SOURCE_ERROR_CATEGORIES: Mapping[str, ErrorCategory] = {
+    "SourceReadError": ErrorCategory.DATA_LOAD,
+    "SourceSchemaError": ErrorCategory.SOURCE_SCHEMA,
+    "SourceAdaptationError": ErrorCategory.SOURCE_SCHEMA,
+    "SourceBundleValidationError": ErrorCategory.SOURCE_SCHEMA,
+    "DemoDataError": ErrorCategory.DATA_LOAD,
+}
+_CURRENT_RANKING_ERROR_CATEGORIES: Mapping[str, ErrorCategory] = {
+    "SourceSchemaError": ErrorCategory.SOURCE_SCHEMA,
+    "IdentifierReconciliationError": ErrorCategory.IDENTIFIER_RECONCILIATION,
+    "ScoredDataError": ErrorCategory.MODEL_SCORE,
+    "ScoredTableValidationError": ErrorCategory.MODEL_SCORE,
+    "DemoCalculationError": ErrorCategory.MODEL_SCORE,
+}
 
 
-panel, bridges = scored_latest()
-year = int(panel["year"].max())
+def _component_name(category: ErrorCategory) -> str:
+    """Return the fixed registry component for one safe boundary."""
 
-# ---- Header: headline number and map come first ----
-total = len(bridges)
-hazards = int(bridges["hazard"].sum())
-demo_budget = 500_000
-chosen_ids = pick(bridges[["structure_id", "p_worse", "consequence",
-                           "insp_cost", "score", "reason"]], demo_budget)
-chosen = bridges[bridges["structure_id"].isin(chosen_ids)].copy()
-caught_est = int(round(chosen["p_worse"].sum())) if not chosen.empty else 0
+    return ERROR_REGISTRY[category.value].component
 
-left, right = st.columns([2, 1])
-with left:
-    st.markdown(
-        f'<div class="headline"><span class="accent">{caught_est}</span> '
-        f'likely declines caught</div>'
-        f'<div class="headline-sub">at a {demo_budget:,} dollar budget, '
-        f'{len(chosen_ids)} of {total} {year} bridges chosen</div>',
-        unsafe_allow_html=True,
+
+def _run_component(
+    operation: Callable[[], T],
+    category: ErrorCategory,
+) -> Outcome[T]:
+    """Run a fixed-category component through the shared error boundary."""
+
+    return run_component(_component_name(category), operation, category)
+
+
+def _run_classified_component(
+    operation: Callable[[], T],
+    default_category: ErrorCategory,
+    categories_by_exception_name: Mapping[str, ErrorCategory],
+) -> Outcome[T]:
+    """Capture a compound provider operation under its precise safe category.
+
+    Source loading includes read, schema, and adaptation stages, while current
+    ranking includes fit, score validation, and identifier reconciliation. The
+    provider APIs intentionally expose each workflow atomically, so this root
+    classifies their typed exceptions without exposing exception text publicly.
+    """
+
+    try:
+        return Outcome.success(operation())
+    except Exception as exception:
+        declared_category = getattr(exception, "category", None)
+        if isinstance(declared_category, ErrorCategory):
+            category = declared_category
+        else:
+            category = default_category
+            for exception_type in type(exception).__mro__:
+                matched = categories_by_exception_name.get(exception_type.__name__)
+                if matched is not None:
+                    category = matched
+                    break
+
+        public_error = user_safe_error(category)
+        log_failure_once(exception, public_error)
+        return Outcome.failure(public_error)
+
+
+def _render_failure(outcome: Outcome[Any]) -> None:
+    """Render the fixed three-field diagnostic from a failed outcome."""
+
+    if outcome.error is None:
+        raise ValueError("A successful outcome has no failure to render.")
+    render_user_safe_error(outcome.error)
+
+
+def _build_provider(mode: RuntimeMode) -> object:
+    """Construct exactly one lazy provider branch for the resolved mode."""
+
+    if mode is RuntimeMode.PRODUCTION:
+        from app.services import build_production_provider
+
+        provider = build_production_provider()
+    elif mode is RuntimeMode.DEMO:
+        # This import is intentionally unreachable from the production branch.
+        from app.demo import build_demo_providers
+
+        provider = build_demo_providers(mode)
+    else:  # pragma: no cover - RuntimeMode is exhaustive
+        raise ValueError("Unsupported resolved runtime mode.")
+
+    validate_provider_mode(cast(Any, provider), mode)
+    return provider
+
+
+def _load_source(provider: object, mode: RuntimeMode) -> object:
+    """Load only the source owned by the already-selected provider branch."""
+
+    if mode is RuntimeMode.PRODUCTION:
+        return cast(Any, provider).load_source_bundle()
+    return cast(Any, provider).load_source()
+
+
+def _build_current_ranking(
+    provider: object,
+    source: object,
+) -> object:
+    """Request one complete current ranking from the active provider."""
+
+    return cast(Any, provider).build_current_ranking(source)
+
+
+def _build_statewide_selection(
+    provider: object,
+    mode: RuntimeMode,
+    ranking: object,
+    active_budget: int,
+) -> SelectionContext:
+    """Create exactly one statewide selection for this Streamlit rerun."""
+
+    if mode is RuntimeMode.PRODUCTION:
+        context = cast(Any, provider).build_selection_context(
+            ranking,
+            active_budget,
+        )
+        if not isinstance(context, SelectionContext):
+            raise TypeError("Production selection did not return SelectionContext.")
+        return context
+
+    selected = cast(Any, provider).select_current(ranking, active_budget)
+    validate_provider_mode(selected, RuntimeMode.DEMO)
+    return build_selection_context(
+        active_budget=active_budget,
+        selection=selected.selection,
+        metrics=selected.metrics,
+        selected_records=selected.selected_records,
+        score_identity=selected.score_identity,
     )
-with right:
-    src = "fake sample" if using_fake() else "real NBI panel"
-    mode = "stub model" if USING_STUBS else "live model"
-    st.markdown(
-        f'<div class="card"><span class="pill">{mode}</span>'
-        f'<div class="headline-sub">data: {src}<br>'
-        f'{hazards} hazard bridges flagged</div></div>',
-        unsafe_allow_html=True,
+
+
+def _run_backtest(
+    provider: object,
+    mode: RuntimeMode,
+    source: object,
+) -> object:
+    """Request the independently computed backtest from the active branch."""
+
+    if mode is RuntimeMode.PRODUCTION:
+        return cast(Any, provider).run_backtest(source, BACKTEST_BUDGETS)
+
+    result = cast(Any, provider).run_backtest(BACKTEST_BUDGETS)
+    validate_provider_mode(result, RuntimeMode.DEMO)
+    return result
+
+
+def _county_options(ranking: object) -> tuple[str, ...]:
+    """Return deterministic county choices from the complete ranking only."""
+
+    records = getattr(ranking, "records", None)
+    if not isinstance(records, pd.DataFrame) or "county" not in records.columns:
+        raise TypeError("Current ranking must expose county records.")
+
+    counties = tuple(records["county"].tolist())
+    if any(not isinstance(county, str) or not county for county in counties):
+        raise ValueError("Ranking counties must be nonempty strings.")
+    return (ALL_COUNTIES, *sorted(set(counties)))
+
+
+def _render_with_boundary(
+    operation: Callable[[], object],
+    category: ErrorCategory,
+) -> None:
+    """Keep a presentation failure inside its dependency-scoped region."""
+
+    outcome = _run_component(operation, category)
+    if outcome.is_failure:
+        _render_failure(outcome)
+
+
+def _active_budget_control() -> int:
+    """Validate shared budget state before any statewide selection is made."""
+
+    remembered_budget = get_active_budget(st.session_state)
+    requested_budget = st.sidebar.slider(
+        "Inspection budget (dollars)",
+        min_value=MIN_ACTIVE_BUDGET,
+        max_value=MAX_ACTIVE_BUDGET,
+        value=remembered_budget,
+        step=ACTIVE_BUDGET_STEP,
+        key=BUDGET_WIDGET_KEY,
+    )
+    return get_active_budget(st.session_state, requested_budget)
+
+
+def main() -> None:
+    """Compose one mode-isolated, dependency-scoped application rerun."""
+
+    st.set_page_config(page_title=PAGE_TITLE, layout="wide")
+    inject_css()
+    st.title(PAGE_TITLE)
+
+    # Exact mode resolution precedes provider construction, cache access, file
+    # reads, or any other data-derived operation.
+    mode_outcome = _run_component(
+        lambda: resolve_runtime_mode(os.environ),
+        ErrorCategory.RUNTIME_MODE,
+    )
+    if mode_outcome.is_failure:
+        _render_failure(mode_outcome)
+        return
+    mode = cast(RuntimeMode, mode_outcome.value)
+
+    provider_category = (
+        ErrorCategory.MODEL_FIT
+        if mode is RuntimeMode.PRODUCTION
+        else ErrorCategory.RUNTIME_MODE
+    )
+    provider_outcome = _run_component(
+        lambda: _build_provider(mode),
+        provider_category,
+    )
+    if provider_outcome.is_failure:
+        _render_failure(provider_outcome)
+        return
+    provider = provider_outcome.value
+
+    active_budget = _active_budget_control()
+
+    source_outcome = _run_classified_component(
+        lambda: _load_source(provider, mode),
+        ErrorCategory.DATA_LOAD,
+        _SOURCE_ERROR_CATEGORIES,
+    )
+    if source_outcome.is_failure:
+        _render_failure(source_outcome)
+        return
+    source = source_outcome.value
+
+    # Current ranking and historical backtest share only the validated source.
+    # Capture both independently so a backtest failure cannot erase current
+    # ranking output and no current-ranking value enters backtest computation.
+    ranking_outcome = _run_classified_component(
+        lambda: _build_current_ranking(provider, source),
+        ErrorCategory.MODEL_FIT,
+        _CURRENT_RANKING_ERROR_CATEGORIES,
+    )
+    backtest_outcome = _run_component(
+        lambda: _run_backtest(provider, mode, source),
+        ErrorCategory.BACKTEST,
     )
 
-st.write("")
+    if ranking_outcome.is_failure:
+        _render_failure(ranking_outcome)
+        if backtest_outcome.is_failure:
+            _render_failure(backtest_outcome)
+        return
+    ranking = ranking_outcome.value
 
-tab_map, tab_budget, tab_back, tab_detail, tab_hazard, tab_export, tab_methods = \
-    st.tabs(["Map", "Budget", "Backtest", "Bridge detail", "Hazards",
-             "Export", "Methods"])
-
-
-def color_for(row, chosen_set):
-    if row["structure_id"] in chosen_set:
-        return [229, 72, 77]        # red, chosen
-    s = row.get("score")
-    if pd.isna(s):
-        return [160, 160, 160]
-    # gray to orange ramp by score
-    hi = bridges["score"].max() or 1
-    t = min(1.0, float(s) / float(hi))
-    return [int(120 + 109 * t), int(120 - 48 * t), int(120 - 43 * t)]
-
-
-# ---- Tab 1: Map ----
-with tab_map:
-    pickable = ["All"] + counties(bridges)
-    sel = st.selectbox("County", pickable, index=0)
-    view = bridges if sel == "All" else bridges[bridges["county"] == sel]
-    chosen_set = set(chosen_ids)
-    m = view.copy()
-    m["fill"] = m.apply(lambda r: color_for(r, chosen_set), axis=1)
-    m["radius"] = (m["adt"].fillna(1000).clip(lower=100) ** 0.5) * 3
-    layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=m,
-        get_position=["lon", "lat"],
-        get_fill_color="fill",
-        get_radius="radius",
-        pickable=True,
-        opacity=0.75,
+    selection_outcome = _run_component(
+        lambda: _build_statewide_selection(
+            provider,
+            mode,
+            ranking,
+            active_budget,
+        ),
+        ErrorCategory.PLANNER,
     )
-    mid = pdk.ViewState(latitude=42.2, longitude=-71.8, zoom=7.2)
-    tip = {"text": "{carries}\ncrosses {crosses}\n{county}\nscore {score}"}
-    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=mid, tooltip=tip))
-    st.caption("Red is chosen for inspection. Warmer means higher risk. "
-               "Dot size is traffic.")
+    if selection_outcome.is_failure:
+        _render_failure(selection_outcome)
+        if backtest_outcome.is_failure:
+            _render_failure(backtest_outcome)
+        return
+    selection_context = cast(SelectionContext, selection_outcome.value)
 
-
-# ---- Tab 2: Budget picker ----
-with tab_budget:
-    budget = st.slider("Inspection budget (dollars)", 100_000, 3_000_000,
-                       demo_budget, 50_000)
-    ids = pick(bridges[["structure_id", "p_worse", "consequence",
-                        "insp_cost", "score", "reason"]], budget)
-    sel_rows = bridges[bridges["structure_id"].isin(ids)].copy()
-    # hazards first
-    sel_rows = sel_rows.sort_values(["hazard", "score"], ascending=[False, False])
-    cost = int(sel_rows["insp_cost"].sum())
-    caught = int(round(sel_rows["p_worse"].sum())) if not sel_rows.empty else 0
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Bridges chosen", f"{len(ids)}")
-    c2.metric("Total cost", f"{cost:,}")
-    c3.metric("Expected caught", f"{caught}")
-    st.toast(f"Picked {len(ids)} bridges")
-
-    show = sel_rows[["structure_id", "county", "worst_rating", "score",
-                     "insp_cost", "hazard", "carries", "crosses", "reason"]]
-    st.dataframe(show, use_container_width=True, hide_index=True)
-
-
-# ---- Tab 3: Backtest ----
-with tab_back:
-    bt = backtest()
-    at_budget = bt[bt["budget"] == bt["budget"].max()]
-    ours = int(at_budget[at_budget["method"] == "ours"]["caught"].sum())
-    wf = int(at_budget[at_budget["method"] == "worst_first"]["caught"].sum())
-    lift = f"{(ours / wf):.1f}x" if wf else "n/a"
-    st.markdown(
-        f'<div class="headline"><span class="accent">{lift}</span> '
-        f'more declines caught than worst first</div>'
-        f'<div class="headline-sub">at the top budget, ours caught {ours} '
-        f'vs {wf} for worst first</div>',
-        unsafe_allow_html=True,
+    context_outcome = _run_component(
+        lambda: ViewContext(
+            mode=mode,
+            provenance=cast(Any, provider).provenance,
+            source=source,
+            current_ranking=ranking,
+            selection_context=selection_context,
+            backtest=(
+                backtest_outcome.value if backtest_outcome.is_success else None
+            ),
+        ),
+        ErrorCategory.PLANNER,
     )
-    st.write("")
-    chart = bt.pivot_table(index="budget", columns="method", values="caught")
-    chart = chart[["ours", "worst_first", "oldest_first"]]
-    st.line_chart(chart, use_container_width=True)
+    if context_outcome.is_failure:
+        _render_failure(context_outcome)
+        return
+    context = cast(ViewContext, context_outcome.value)
+
+    # County is deliberately read only after the statewide SelectionContext is
+    # frozen. It is passed only to render_map and cannot affect any planner key.
+    county_outcome = _run_component(
+        lambda: _county_options(ranking),
+        ErrorCategory.MODEL_SCORE,
+    )
+    if county_outcome.is_success:
+        county_choice = st.sidebar.selectbox(
+            "County",
+            cast(tuple[str, ...], county_outcome.value),
+            index=0,
+            key=COUNTY_WIDGET_KEY,
+        )
+        map_county = None if county_choice == ALL_COUNTIES else county_choice
+    else:
+        _render_failure(county_outcome)
+        map_county = None
+
+    # The required primary evidence is rendered before every secondary tab.
+    _render_with_boundary(
+        lambda: render_current_ranking(context),
+        ErrorCategory.PLANNER,
+    )
+    _render_with_boundary(
+        lambda: render_map(context, county=map_county),
+        ErrorCategory.MODEL_SCORE,
+    )
+
+    budget_tab, backtest_tab, detail_tab, hazards_tab, export_tab, methods_tab = (
+        st.tabs(
+            [
+                "Budget",
+                BACKTEST_SECTION_LABEL,
+                "Bridge detail",
+                "Hazards",
+                "Export",
+                "Methods",
+            ]
+        )
+    )
+
+    with budget_tab:
+        _render_with_boundary(
+            lambda: render_budget(context),
+            ErrorCategory.PLANNER,
+        )
+
+    with backtest_tab:
+        if backtest_outcome.is_failure:
+            st.subheader(BACKTEST_SECTION_LABEL)
+            _render_failure(backtest_outcome)
+        else:
+            _render_with_boundary(
+                lambda: render_backtest(context),
+                ErrorCategory.BACKTEST,
+            )
+
+    with detail_tab:
+        _render_with_boundary(
+            lambda: render_bridge_detail(context),
+            ErrorCategory.BRIDGE_DETAIL,
+        )
+
+    with hazards_tab:
+        _render_with_boundary(
+            lambda: render_hazards(context),
+            ErrorCategory.PLANNER,
+        )
+
+    with export_tab:
+        _render_with_boundary(
+            lambda: render_export(context),
+            ErrorCategory.EXPORT,
+        )
+
+    with methods_tab:
+        _render_with_boundary(
+            lambda: render_methods(context),
+            ErrorCategory.MODEL_SCORE,
+        )
 
 
-# ---- Tab 4: Bridge detail ----
-with tab_detail:
-    options = bridges.sort_values("score", ascending=False)["structure_id"].tolist()
-    sid = st.selectbox("Bridge", options, index=0 if options else None)
-    if sid:
-        row = bridges[bridges["structure_id"] == sid].iloc[0]
-        hist = history(panel, sid).set_index("year")[["deck", "super", "sub"]]
-        a, b = st.columns([2, 1])
-        with a:
-            st.line_chart(hist, use_container_width=True)
-        with b:
-            st.markdown(f'<div class="card"><b>{row.get("carries","")}</b>'
-                        f'<div class="headline-sub">crosses '
-                        f'{row.get("crosses","")}<br>{row.get("county","")} county'
-                        f'</div></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="headline-sub">{row.get("reason","")}</div>',
-                        unsafe_allow_html=True)
-            st.link_button("Open in FHWA InfoBridge", INFOBRIDGE)
-
-
-# ---- Tab 5: Hazards ----
-with tab_hazard:
-    st.caption("Underwater or fracture critical bridges are hazardous to "
-               "inspect and are shown first in the chosen list.")
-    ids = pick(bridges[["structure_id", "p_worse", "consequence",
-                        "insp_cost", "score", "reason"]], demo_budget)
-    sel_rows = bridges[bridges["structure_id"].isin(ids)].copy()
-    sel_rows = sel_rows.sort_values(["hazard", "score"], ascending=[False, False])
-    sel_rows["hazard_kind"] = sel_rows.apply(
-        lambda r: ", ".join(
-            [k for k, v in (("underwater", r["underwater"]),
-                            ("fracture critical", r["fracture_critical"])) if v])
-        or "none", axis=1)
-    show = sel_rows[["structure_id", "county", "hazard_kind", "worst_rating",
-                     "score", "carries", "crosses"]]
-    if int(sel_rows["hazard"].sum()) == 0:
-        st.info("No hazard bridges in the current data. If the panel shows zero "
-                "fracture critical and underwater bridges, the loader may be "
-                "reading NBI items 092A and 092B as plain Y instead of the Y plus "
-                "months form (for example Y24). That is a Person A loader fix.")
-    st.dataframe(show, use_container_width=True, hide_index=True)
-
-
-# ---- Tab 6: Export ----
-with tab_export:
-    ids = pick(bridges[["structure_id", "p_worse", "consequence",
-                        "insp_cost", "score", "reason"]], demo_budget)
-    sel_rows = bridges[bridges["structure_id"].isin(ids)].copy()
-    sel_rows = sel_rows.sort_values(["county", "hazard", "score"],
-                                    ascending=[True, False, False])
-    cols = ["county", "structure_id", "worst_rating", "score", "insp_cost",
-            "hazard", "carries", "crosses", "reason"]
-    csv = sel_rows[cols].to_csv(index=False).encode("utf-8")
-    st.download_button("Download chosen list (CSV, grouped by county)", csv,
-                       file_name="chosen_bridges.csv", mime="text/csv")
-    st.dataframe(sel_rows[cols], use_container_width=True, hide_index=True)
-
-
-# ---- Tab 7: Methods ----
-with tab_methods:
-    st.markdown("""
-### Methods
-
-Data source: Federal Highway Administration National Bridge Inventory (NBI),
-Massachusetts, years 2012, 2016, 2018, 2022.
-
-Inspection cost is an assumed estimate. NBI does not publish a per bridge
-inspection cost, so we use a modeled estimate, not a real quote. The
-improvement cost field in NBI is repair cost, not inspection cost.
-
-Schema note: NBI is being replaced by the Specification for the National Bridge
-Inventory (SNBI). Item numbers and some fields change under SNBI, so a loader
-built on NBI item numbers will need a mapping update when the data moves to
-SNBI.
-
-We match bridges across years by structure number and look for a drop, meaning
-the worst of the deck, superstructure, and substructure ratings falls by one or
-more between two appearances. We exclude rebuilt bridges because an improvement
-is not natural decline.
-""")
+if __name__ == "__main__":
+    main()

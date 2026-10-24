@@ -1,21 +1,34 @@
-"""Part B — decline model and scoring.
+"""Authoritative public API for bridge data, modeling, scoring, and targets.
 
-Public API (see .kiro/steering/contract.md):
-    load_panel(path=None)              -> DataFrame (adapts Part A's panel)
-    is_safety_drop(start, end)         -> bool  (shared target, also for Part C)
-    fit_decline(panel, start, end)     -> DeclineRates (grouped model)
-    fit_logistic(panel, start, end)    -> LogisticModel
-    flight_cost(row)                    -> (cost_usd, minutes, reason_fragment)
-    score(table, model, asof)          -> DataFrame[id, p_worse, consequence,
-                                                     insp_cost, flight_minutes,
-                                                     expected_drops_per_10k,
-                                                     score, voi, decision,
-                                                     reason, reason_human]
-    add_voi(scored)                     -> scored + voi/decision columns
-    simulate_flight(scored_row, outcome)-> (updated_p_worse, updated_insp_date)
+The strict source/scored-data boundary is implemented only in
+:mod:`model.data` and re-exported here for application and planner consumers.
+``load_panel`` remains the compatibility entry point over that same reader,
+validator, and adapter; it does not define a second schema mapping.
+Part B's decline model, flight-cost, and value-of-information layers are
+exported alongside it.
 """
 
-from .data import FOUR_YEAR_PAIRS, load_panel
+from .data import (
+    DEFAULT_PANEL_PATH,
+    FOUR_YEAR_PAIRS,
+    MODELED_COST_DISCLOSURE,
+    REQUIRED_YEARS,
+    SCORED_COLUMNS,
+    SOURCE_COLUMNS,
+    IdentifierReconciliationError,
+    ScoredDataError,
+    ScoredTableValidationError,
+    SourceAdaptationError,
+    SourceDataError,
+    SourceReadError,
+    SourceSchemaError,
+    adapt_source_panel,
+    load_panel,
+    read_source_panel,
+    reconcile_scored_table,
+    validate_scored_table,
+    validate_source_panel,
+)
 from .flight_cost import flight_cost
 from .materials import MATERIAL_NAMES, material_name
 from .score import (
@@ -39,6 +52,27 @@ from .voi import (
 )
 
 __all__ = [
+    # Strict source and score boundary (Part A).
+    "DEFAULT_PANEL_PATH",
+    "SOURCE_COLUMNS",
+    "REQUIRED_YEARS",
+    "SCORED_COLUMNS",
+    "MODELED_COST_DISCLOSURE",
+    "FOUR_YEAR_PAIRS",
+    "SourceDataError",
+    "SourceReadError",
+    "SourceSchemaError",
+    "SourceAdaptationError",
+    "ScoredDataError",
+    "ScoredTableValidationError",
+    "IdentifierReconciliationError",
+    "read_source_panel",
+    "validate_source_panel",
+    "adapt_source_panel",
+    "validate_scored_table",
+    "reconcile_scored_table",
+    "load_panel",
+    # Decline model, flight cost, VOI (Part B).
     "fit_decline",
     "fit_logistic",
     "score",
@@ -46,10 +80,6 @@ __all__ = [
     "LogisticModel",
     "ConditionBaseline",
     "fit_condition_baseline",
-    "load_panel",
-    "FOUR_YEAR_PAIRS",
-    "is_safety_drop",
-    "is_safety_drop_series",
     "months_since_insp",
     "flight_cost",
     "material_name",
@@ -60,4 +90,7 @@ __all__ = [
     "DECISION_LABELS",
     "FIX_TRACK_THRESHOLD",
     "FLY_TOP_FRACTION",
+    # Shared Safety_Drop target.
+    "is_safety_drop",
+    "is_safety_drop_series",
 ]

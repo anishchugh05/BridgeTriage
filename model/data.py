@@ -1,30 +1,17 @@
-"""Adapter from Part A's published panel to the names Part B's model uses.
+"""Strict source-data boundary for the bridge decline model.
 
-Part A owns ``bridges/panel.parquet`` and its schema is fixed (see
-``bridges/README.md``). We never edit anything under ``bridges/`` — instead
-``load_panel`` reads that file and returns a frame whose column names and
-derived fields match what :mod:`model.score` expects.
+The published bridge panel has one source schema. This module reads that
+repository asset without fallback, validates it without coercing or mutating
+it, and creates the model-facing copy through the only supported mapping:
 
-Mapping applied here:
-- ``structure_id``      -> ``id``
-- ``insp_freq_months``  -> ``insp_freq_mo``
-- ``year_built``        derived as ``year - age``
-- ``worst_rating``      kept as-is; score.py uses it as the condition when
-                        present, and a null ``worst_rating`` is not-applicable
-                        and skipped.
-- ``year_recon`` == 0   -> ``NaN`` (0 means "never rebuilt")
-- ``rebuilt``           passed through; fit_decline excludes a start->end pair
-                        when the END year's rebuilt flag is True.
-- ``improvement_cost``  deliberately NOT mapped to ``insp_cost`` — it is a
-                        repair cost, not an inspection cost. score.py uses the
-                        estimated drone-flight cost when no real inspection
-                        cost exists.
-- ``insp_date``         not in the panel yet. If Part A adds it later, it is
-                        picked up automatically; otherwise score.py falls back
-                        to ``insp_freq_mo``.
+* ``structure_id`` -> ``id``
+* ``insp_freq_months`` -> ``insp_freq_mo``
+* ``year_built`` is appended as ``year - age``
 
-The real panel's 4-year gaps are 2012->2016 and 2018->2022. Never fit on the
-2016->2018 gap (2-year horizon) — see ``FOUR_YEAR_PAIRS``.
+Every other source column and value is preserved. In particular,
+``year_recon == 0`` continues to mean "never reconstructed", and
+``improvement_cost`` remains a repair cost; it is never mapped to an
+inspection cost.
 """
 
 from __future__ import annotations
@@ -36,64 +23,8 @@ from typing import Final, Iterable
 import numpy as np
 import pandas as pd
 
-DEFAULT_PANEL_PATH = Path(__file__).resolve().parents[1] / "bridges" / "panel.parquet"
-
-# The only interval pairs whose horizon matches (4 years). The 2016->2018 gap
-# is 2 years and must never be used for fitting or backtest.
-FOUR_YEAR_PAIRS = [(2012, 2016), (2018, 2022)]
-
-
-def load_panel(path=None) -> pd.DataFrame:
-    """Load Part A's panel and adapt column names/derived fields for the model.
-
-    Does not mutate any file under ``bridges/``. Returns a new DataFrame.
-    """
-    path = Path(path) if path is not None else DEFAULT_PANEL_PATH
-    raw = pd.read_parquet(path)
-    df = raw.copy()
-
-    # --- renames ------------------------------------------------------------
-    renames = {}
-    if "structure_id" in df.columns:
-        renames["structure_id"] = "id"
-    if "insp_freq_months" in df.columns:
-        renames["insp_freq_months"] = "insp_freq_mo"
-    df = df.rename(columns=renames)
-
-    # --- derive year_built = year - age ------------------------------------
-    if "year_built" not in df.columns and {"year", "age"}.issubset(df.columns):
-        df["year_built"] = df["year"] - df["age"]
-
-    # --- year_recon 0 means "never rebuilt" -> NaN -------------------------
-    if "year_recon" in df.columns:
-        df["year_recon"] = df["year_recon"].where(df["year_recon"] != 0, other=pd.NA)
-        df["year_recon"] = pd.to_numeric(df["year_recon"], errors="coerce")
-
-    # --- insp_date: pick it up automatically if Part A adds it later -------
-    if "insp_date" in df.columns:
-        df["insp_date"] = pd.to_datetime(df["insp_date"], errors="coerce")
-    # If absent, we intentionally do NOT create it; score.py falls back to
-    # insp_freq_mo.
-
-    # improvement_cost is left untouched and NOT renamed to insp_cost.
-
-    return df
-
-
-if __name__ == "__main__":
-    p = load_panel()
-    print(f"loaded {len(p)} rows, {p['id'].nunique()} bridges, years {sorted(p['year'].unique())}")
-    print("has insp_date:", "insp_date" in p.columns)
-    print("has insp_cost:", "insp_cost" in p.columns)
-    print(p[["id", "year", "year_built", "worst_rating", "insp_freq_mo", "rebuilt"]].head())
-
-
-# ---------------------------------------------------------------------------
-# Scored-output / reconciliation boundary (restored from Part A's app so the
-# names ``model.data`` is expected to export remain available). Definitions
-# below are copied verbatim from Part A and are independent of the adapter
-# above.
-# ---------------------------------------------------------------------------
+REPOSITORY_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+DEFAULT_PANEL_PATH: Final[Path] = REPOSITORY_ROOT / "bridges" / "panel.parquet"
 
 SOURCE_COLUMNS: Final[tuple[str, ...]] = (
     "structure_id",
@@ -119,9 +50,36 @@ SOURCE_COLUMNS: Final[tuple[str, ...]] = (
     "insp_date",
 )
 
+REQUIRED_YEARS: Final[frozenset[int]] = frozenset({2012, 2016, 2018, 2022})
+RATING_COLUMNS: Final[tuple[str, ...]] = (
+    "deck",
+    "super",
+    "sub",
+    "worst_rating",
+)
+BOOLEAN_COLUMNS: Final[tuple[str, ...]] = (
+    "fracture_critical",
+    "underwater",
+    "rebuilt",
+)
+REQUIRED_STRING_COLUMNS: Final[tuple[str, ...]] = (
+    "county",
+    "material",
+    "carries",
+    "crosses",
+)
+
+# The only interval pairs whose horizons are four years. The 2016 -> 2018 gap
+# is two years and must not be used for fitting or backtesting.
+FOUR_YEAR_PAIRS = [(2012, 2016), (2018, 2022)]
+
 
 class SourceDataError(Exception):
     """Base class for failures at the source-data boundary."""
+
+
+class SourceReadError(SourceDataError):
+    """Raised when the configured source panel cannot be read."""
 
 
 class SourceSchemaError(SourceDataError):
@@ -140,6 +98,39 @@ class SourceSchemaError(SourceDataError):
         super().__init__(
             "Source panel failed validation: " + ", ".join(unique_issues)
         )
+
+
+class SourceAdaptationError(SourceDataError):
+    """Raised when the declared lossless mapping cannot be established."""
+
+
+def _resolve_source_path(path: str | Path | None) -> Path:
+    """Resolve a panel path independently of the caller's working directory."""
+    if path is None:
+        return DEFAULT_PANEL_PATH
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = REPOSITORY_ROOT / candidate
+    return candidate.resolve()
+
+
+def read_source_panel(path: str | Path | None = None) -> pd.DataFrame:
+    """Read the source panel from a repository-relative path.
+
+    Relative arguments are interpreted from the repository root, never from
+    the process working directory. The function performs no fallback,
+    generation, normalization, or adaptation. Read failures are wrapped in a
+    typed boundary exception while retaining the original exception as the
+    private cause.
+    """
+    source_path = _resolve_source_path(path)
+    try:
+        source = pd.read_parquet(source_path)
+    except Exception as exc:
+        raise SourceReadError("Production bridge data could not be read.") from exc
+    if not isinstance(source, pd.DataFrame):
+        raise SourceReadError("Production bridge data was not a table.")
+    return source
 
 
 def _is_missing(value: object) -> bool:
@@ -176,6 +167,240 @@ def _as_integer(value: object) -> int | None:
 
 def _is_nonempty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _is_exact_boolean(value: object) -> bool:
+    return isinstance(value, (bool, np.bool_))
+
+
+def _as_timestamp(value: object) -> pd.Timestamp | None:
+    """Parse one datetime-like scalar without changing its source value."""
+    if _is_missing(value) or isinstance(
+        value, (bool, np.bool_, int, float, complex, np.number)
+    ):
+        return None
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return None if pd.isna(timestamp) else timestamp
+
+
+def validate_source_panel(source: pd.DataFrame) -> None:
+    """Validate ``source`` against the exact published 21-column contract.
+
+    Validation is observational: this function does not assign, coerce, trim,
+    sort, or otherwise mutate ``source``. All detected categories are reported
+    together as stable issue identifiers in :class:`SourceSchemaError`.
+    """
+    if not isinstance(source, pd.DataFrame):
+        raise SourceSchemaError(("frame.type",))
+
+    if tuple(source.columns) != SOURCE_COLUMNS:
+        # Other predicates cannot be evaluated safely with a missing,
+        # additional, duplicated, or reordered column.
+        raise SourceSchemaError(("columns.exact_order",))
+
+    issues: list[str] = []
+
+    year_values = source["year"].tolist()
+    normalized_years = [_as_integer(value) for value in year_values]
+    years_are_integral = all(value is not None for value in normalized_years)
+    if not years_are_integral or any(
+        value not in REQUIRED_YEARS
+        for value in normalized_years
+        if value is not None
+    ):
+        issues.append("year.allowed_integral")
+
+    represented_years = {
+        value for value in normalized_years if value in REQUIRED_YEARS
+    }
+    if represented_years != REQUIRED_YEARS:
+        issues.append("year.required_coverage")
+
+    structure_ids = source["structure_id"].tolist()
+    ids_are_valid = all(_is_nonempty_string(value) for value in structure_ids)
+    if not ids_are_valid:
+        issues.append("structure_id.nonempty_string")
+
+    if ids_are_valid and years_are_integral:
+        keys = tuple(zip(structure_ids, normalized_years))
+        if len(set(keys)) != len(keys):
+            issues.append("key.structure_id_year_unique")
+
+    for column in REQUIRED_STRING_COLUMNS:
+        if not all(_is_nonempty_string(value) for value in source[column].tolist()):
+            issues.append(f"{column}.nonempty_string")
+
+    for column in ("age", "adt"):
+        values = [_as_integer(value) for value in source[column].tolist()]
+        if any(value is None or value < 0 for value in values):
+            issues.append(f"{column}.nonnegative_integral")
+
+    frequencies = [
+        _as_integer(value) for value in source["insp_freq_months"].tolist()
+    ]
+    if any(value is None or value <= 0 for value in frequencies):
+        issues.append("insp_freq_months.positive_integral")
+
+    for column in RATING_COLUMNS:
+        invalid_rating = False
+        for value in source[column].tolist():
+            if _is_missing(value):
+                continue
+            rating = _as_integer(value)
+            if rating is None or not 0 <= rating <= 9:
+                invalid_rating = True
+                break
+        if invalid_rating:
+            issues.append(f"{column}.nullable_rating")
+
+    rowwise_minimum_is_valid = True
+    for deck, superstructure, substructure, worst in source[
+        ["deck", "super", "sub", "worst_rating"]
+    ].itertuples(index=False, name=None):
+        component_values: list[int] = []
+        components_are_valid = True
+        for value in (deck, superstructure, substructure):
+            if _is_missing(value):
+                continue
+            rating = _as_integer(value)
+            if rating is None or not 0 <= rating <= 9:
+                components_are_valid = False
+                break
+            component_values.append(rating)
+
+        if not components_are_valid:
+            continue
+        if not component_values:
+            if not _is_missing(worst):
+                rowwise_minimum_is_valid = False
+                break
+            continue
+
+        worst_value = _as_integer(worst)
+        if worst_value is None or worst_value != min(component_values):
+            rowwise_minimum_is_valid = False
+            break
+
+    if not rowwise_minimum_is_valid:
+        issues.append("worst_rating.rowwise_minimum")
+
+    for column in BOOLEAN_COLUMNS:
+        if not all(_is_exact_boolean(value) for value in source[column].tolist()):
+            issues.append(f"{column}.exact_boolean")
+
+    reconstruction_is_valid = True
+    for reconstruction, year in zip(
+        source["year_recon"].tolist(), normalized_years
+    ):
+        reconstruction_year = _as_integer(reconstruction)
+        if reconstruction_year is None or (
+            reconstruction_year != 0
+            and (
+                reconstruction_year < 1700
+                or year is None
+                or reconstruction_year > year
+            )
+        ):
+            reconstruction_is_valid = False
+            break
+    if not reconstruction_is_valid:
+        issues.append("year_recon.valid_for_record_year")
+
+    for value in source["improvement_cost"].tolist():
+        if _is_missing(value):
+            continue
+        cost = _as_finite_number(value)
+        if cost is None or cost < 0:
+            issues.append("improvement_cost.nullable_nonnegative_finite")
+            break
+
+    for column, lower, upper in (
+        ("lat", 41.0, 43.0),
+        ("lon", -74.0, -69.5),
+    ):
+        for value in source[column].tolist():
+            if _is_missing(value):
+                continue
+            coordinate = _as_finite_number(value)
+            if coordinate is None or not lower <= coordinate <= upper:
+                issues.append(f"{column}.nullable_finite_bounds")
+                break
+
+    inspection_dates_are_valid = True
+    for value, year in zip(source["insp_date"].tolist(), normalized_years):
+        timestamp = _as_timestamp(value)
+        if (
+            timestamp is None
+            or timestamp.day != 1
+            or year is None
+            or (timestamp.year, timestamp.month, timestamp.day) > (year, 4, 1)
+        ):
+            inspection_dates_are_valid = False
+            break
+    if not inspection_dates_are_valid:
+        issues.append("insp_date.month_start_by_april_first")
+
+    if issues:
+        raise SourceSchemaError(issues)
+
+
+def _assert_adaptation_postconditions(
+    source: pd.DataFrame, adapted: pd.DataFrame
+) -> None:
+    expected_columns = tuple(
+        "id"
+        if column == "structure_id"
+        else "insp_freq_mo"
+        if column == "insp_freq_months"
+        else column
+        for column in SOURCE_COLUMNS
+    ) + ("year_built",)
+    if tuple(adapted.columns) != expected_columns:
+        raise SourceAdaptationError("Adapted panel has an invalid column mapping.")
+    if len(adapted) != len(source) or not adapted.index.equals(source.index):
+        raise SourceAdaptationError("Adapted panel did not preserve source rows.")
+
+    for source_column in SOURCE_COLUMNS:
+        adapted_column = {
+            "structure_id": "id",
+            "insp_freq_months": "insp_freq_mo",
+        }.get(source_column, source_column)
+        if not source[source_column].equals(adapted[adapted_column]):
+            raise SourceAdaptationError(
+                "Adapted panel did not preserve a source column."
+            )
+
+    expected_year_built = source["year"] - source["age"]
+    if not expected_year_built.equals(adapted["year_built"]):
+        raise SourceAdaptationError("Adapted panel has an invalid year_built value.")
+    if "insp_cost" in adapted.columns:
+        raise SourceAdaptationError(
+            "Adapted panel must not map repair cost to inspection cost."
+        )
+
+
+def adapt_source_panel(source: pd.DataFrame) -> pd.DataFrame:
+    """Validate and create a lossless model-facing copy of ``source``.
+
+    No adapted frame is returned when source validation fails. The input frame
+    is never modified. Only the two declared renames are applied, and
+    ``year_built`` is the sole added column.
+    """
+    validate_source_panel(source)
+
+    adapted = source.copy(deep=True).rename(
+        columns={
+            "structure_id": "id",
+            "insp_freq_months": "insp_freq_mo",
+        }
+    )
+    adapted["year_built"] = adapted["year"] - adapted["age"]
+
+    _assert_adaptation_postconditions(source, adapted)
+    return adapted
 
 
 SCORED_COLUMNS: Final[tuple[str, ...]] = (
@@ -466,3 +691,30 @@ def reconcile_scored_table(
         )
 
     return reconciled.drop(columns="_score_merge")
+
+
+def load_panel(path: str | Path | None = None) -> pd.DataFrame:
+    """Compatibility wrapper over the strict read/validate/adapt boundary."""
+    return adapt_source_panel(read_source_panel(path))
+
+
+if __name__ == "__main__":
+    panel = load_panel()
+    print(
+        f"loaded {len(panel)} rows, {panel['id'].nunique()} bridges, "
+        f"years {sorted(panel['year'].unique())}"
+    )
+    print("has insp_date:", "insp_date" in panel.columns)
+    print("has insp_cost:", "insp_cost" in panel.columns)
+    print(
+        panel[
+            [
+                "id",
+                "year",
+                "year_built",
+                "worst_rating",
+                "insp_freq_mo",
+                "rebuilt",
+            ]
+        ].head()
+    )

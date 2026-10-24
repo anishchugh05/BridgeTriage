@@ -466,10 +466,47 @@ def test_calibration_table_has_five_quantile_bins():
 
 def test_batch_run_writes_both_score_files(tmp_path, panel, rates, monkeypatch):
     import model.run as batch
+    from model.data import REQUIRED_YEARS, SOURCE_COLUMNS
+
+    model_panel = panel[panel["year"].isin(REQUIRED_YEARS)].copy()
+    source_panel = pd.DataFrame({
+        "structure_id": model_panel["id"].astype(str),
+        "year": model_panel["year"],
+        "county": model_panel["county"],
+        "material": model_panel["material"],
+        "age": model_panel["year"] - model_panel["year_built"],
+        "adt": model_panel["adt"],
+        "deck": model_panel["deck"],
+        "super": model_panel["super"],
+        "sub": model_panel["sub"],
+        "worst_rating": model_panel[["deck", "super", "sub"]].min(
+            axis=1, skipna=True
+        ),
+        "insp_freq_months": model_panel["insp_freq_mo"],
+        "fracture_critical": model_panel["fracture_critical"],
+        "underwater": model_panel["underwater"],
+        "year_recon": pd.to_numeric(
+            model_panel["year_recon"], errors="coerce"
+        ).fillna(0).astype(int),
+        "rebuilt": False,
+        "lat": model_panel["lat"].where(model_panel["lat"].between(41.0, 43.0)),
+        "lon": model_panel["lon"].where(
+            model_panel["lon"].between(-74.0, -69.5)
+        ),
+        "carries": "Synthetic route",
+        "crosses": model_panel["crosses"],
+        "improvement_cost": np.nan,
+        "insp_date": pd.to_datetime(
+            model_panel["year"].astype(str) + "-04-01"
+        ),
+    }).loc[:, list(SOURCE_COLUMNS)]
+
+    assert tuple(source_panel.columns) == SOURCE_COLUMNS
+    assert set(source_panel["year"].unique()) == REQUIRED_YEARS
 
     panel_path = tmp_path / "panel.parquet"
     output = tmp_path / "processed"
-    panel.to_parquet(panel_path, index=False)
+    source_panel.to_parquet(panel_path, index=False)
     monkeypatch.setattr(
         batch,
         "select_model",
