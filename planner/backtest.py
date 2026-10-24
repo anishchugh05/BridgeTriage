@@ -13,12 +13,16 @@ Conventions (per requirements.md):
   below (never imported from model).
 """
 
+import logging
+
 import matplotlib
 
 matplotlib.use("Agg")  # headless: figures are saved to files, never shown
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module constants
@@ -286,8 +290,91 @@ def cost_accounting(selected_ids, candidates, county_fee):
     return total, len(seen)
 
 # ---------------------------------------------------------------------------
-# Algorithm 9: make_fake synthetic data generator (R13)
+# Algorithm 4: pick (R5)
 # ---------------------------------------------------------------------------
+
+def pick(scores, budget, candidates, pool_cost_info, county_fee,
+         rank_by_value_per_cost=False, tiebreak="adt", rng=None):
+    """Greedy budgeted selection by score (Algorithm 4, R5).
+
+    scores: dict structure_id -> float; higher = picked first, all methods,
+    no exceptions (R5.2). Returns selected structure_ids in selection order.
+
+    Validation (R5.3): ValueError unless ALL scores are finite (both modes);
+    when rank_by_value_per_cost=True, additionally ValueError if any score
+    is negative; ValueError if tiebreak="random" and rng is None.
+
+    Ranking (R5.4): key = score, or score / inspect_cost when
+    rank_by_value_per_cost=True (model scores and oracle). The value-per-
+    cost division happens HERE, never inside scoring functions (R5).
+
+    Tie-break (R5.5): tiebreak="adt" sorts by (key DESC, adt DESC), stable;
+    tiebreak="random" shuffles the candidate order with rng FIRST, then
+    stable-sorts by key DESC only (equal keys keep shuffled order).
+
+    Greedy (R5.6, R4.2): iterate in rank order, tentatively add each bridge
+    via marginal_cost (the ONLY cost rule), keep it while
+    spent + marginal <= available * (1 + REL_TOL), with
+    available = budget * pool_cost_info['total_cost_pool'] (R4.4, R4.5).
+    O(n log n) overall. Candidates missing from scores are skipped with a
+    logged warning; scores for non-candidates are ignored (R5.7).
+    """
+    values = np.asarray(list(scores.values()), dtype=float)
+    if not np.isfinite(values).all():
+        raise ValueError(
+            "pick: all scores must be finite (no NaN/inf) (R5.3)"
+        )
+    if rank_by_value_per_cost and (values < 0).any():
+        raise ValueError(
+            "pick: rank_by_value_per_cost=True requires non-negative "
+            "scores (R5.3)"
+        )
+    if tiebreak == "random" and rng is None:
+        raise ValueError(
+            'pick: tiebreak="random" requires an rng (R5.3)'
+        )
+
+    available = budget * pool_cost_info["total_cost_pool"]
+
+    # Candidates missing from scores are skipped (R5.7); scores keyed by
+    # non-candidates never enter ids and are ignored.
+    ids = np.array([sid for sid in candidates.index if sid in scores])
+    n_skipped = len(candidates) - len(ids)
+    if n_skipped:
+        logger.warning(
+            "pick: %d candidate(s) missing from scores; skipped (R5.7)",
+            n_skipped,
+        )
+
+    keys = np.array([scores[sid] for sid in ids], dtype=float)
+    inspect_cost = candidates.loc[ids, "inspect_cost"].to_numpy(dtype=float)
+    if rank_by_value_per_cost:
+        keys = keys / inspect_cost
+    adt = candidates.loc[ids, "adt"].to_numpy(dtype=float)
+
+    if tiebreak == "random":
+        # Shuffle FIRST, then stable sort by key only (R5.5).
+        perm = rng.permutation(len(ids))
+        ids, keys, inspect_cost, adt = (
+            ids[perm], keys[perm], inspect_cost[perm], adt[perm]
+        )
+        order = np.argsort(-keys, kind="stable")
+    else:
+        # lexsort: indirect stable sort, LAST key is primary:
+        # (key DESC, adt DESC) (R5.5).
+        order = np.lexsort((-adt, -keys))
+
+    counties = candidates.loc[ids, "county"].to_numpy()
+    selected = []
+    seen = set()
+    spent = 0.0
+    for i in order:
+        m = marginal_cost(counties[i], inspect_cost[i], seen, county_fee)
+        if spent + m <= available * (1 + REL_TOL):
+            selected.append(ids[i])
+            spent += m
+            seen.add(counties[i])
+    return selected
 
 def _logistic(x):
     return 1.0 / (1.0 + np.exp(-np.asarray(x, dtype=float)))

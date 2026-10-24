@@ -35,7 +35,7 @@ except ValueError: print('signal=0,noise=0 rejected')"`
   - _Requirements: R4_
   - Demo: `python -c "import pandas as pd; from planner.backtest import cost_accounting; c=pd.DataFrame({'county':['x','x','y'],'inspect_cost':[1.0,1.0,1.0]},index=['a','b','c']); t,n=cost_accounting(['a','b','c'],c,5.0); assert t==13.0 and n==2; print('cost 13.0 (1+5 +1 +1+5), 2 counties')"`
 
-- [ ] 5. Implement pick()
+- [x] 5. Implement pick()
   - Canonical signature (R5.1) per Algorithm 4: ValueError unless all scores finite (both modes), non-negative (value-per-cost mode), and rng given when tiebreak="random"; key = score or score/inspect_cost; tiebreak="adt" sorts (key DESC, adt DESC) stable, tiebreak="random" shuffles with rng then stable key sort; greedy via `marginal_cost`, budget check `cost <= available*(1+REL_TOL)`; O(n log n)
   - _Requirements: R4, R5_
   - Demo: `python -c "import pandas as pd, numpy as np; from planner.backtest import pick; c=pd.DataFrame({'county':['x','x','y'],'inspect_cost':[1.0,1.0,1.0],'adt':[100.0,50.0,10.0],'year_built':[1950,1960,1970],'min_2018':[3.0,5.0,7.0]},index=['a','b','c']); p={'total_cost_pool':13.0,'unique_counties':{'x','y'}}; s=pick({'a':3.0,'b':2.0,'c':1.0},0.9,c,p,5.0); assert s==['a','b']; print('adt tiebreak:',s,'cost 7.0')
