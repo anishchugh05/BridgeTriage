@@ -458,6 +458,33 @@ class IdentifierReconciliationError(ScoredDataError):
         )
 
 
+def project_scored_table(scored: pd.DataFrame) -> pd.DataFrame:
+    """Return the canonical six-column planner projection of model output.
+
+    Existing canonical inputs are copied unchanged. Expanded Part B output is
+    reduced to the stable planner fields and its score is expressed as
+    ``p_worse * consequence / insp_cost``. Part B's normalized per-10k score
+    differs only by one positive cohort-wide factor, so candidate ordering is
+    preserved exactly while all app and planner consumers share one contract.
+    """
+
+    if not isinstance(scored, pd.DataFrame):
+        raise ScoredTableValidationError(("scored.frame_type",))
+    if tuple(scored.columns) == SCORED_COLUMNS:
+        return scored.copy(deep=True)
+
+    missing = [column for column in SCORED_COLUMNS if column not in scored.columns]
+    if missing:
+        raise ScoredTableValidationError(("scored.projection_columns",))
+
+    projected = scored.loc[:, list(SCORED_COLUMNS)].copy(deep=True)
+    probability = pd.to_numeric(projected["p_worse"], errors="coerce")
+    consequence = pd.to_numeric(projected["consequence"], errors="coerce")
+    cost = pd.to_numeric(projected["insp_cost"], errors="coerce")
+    projected["score"] = probability * consequence / cost
+    return projected
+
+
 def _materialize_ranking_ids(
     ranking_ids: Iterable[str],
 ) -> tuple[tuple[object, ...], list[str]]:

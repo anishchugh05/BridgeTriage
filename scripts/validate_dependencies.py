@@ -51,6 +51,18 @@ BOOTSTRAP_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
     {"pip", "setuptools", "wheel"}
 )
 PRODUCTION_PACKAGES: Final[tuple[str, ...]] = ("app", "model", "planner")
+# These planner modules are test, reporting, or ad-hoc analysis entry points;
+# none is imported by planner's production public API or the Streamlit app.
+NON_PRODUCTION_SOURCE_PATHS: Final[frozenset[str]] = frozenset(
+    {
+        "planner/harness.py",
+        "planner/properties.py",
+        "planner/run_ci.py",
+        "planner/run_export.py",
+        "planner/run_model.py",
+        "planner/run_real.py",
+    }
+)
 REQUIRED_IMPORTS: Final[tuple[str, ...]] = (
     "streamlit",
     "pandas",
@@ -309,6 +321,9 @@ def discover_production_distributions(repository_root: Path) -> frozenset[str]:
                 f"production package is missing: {package_name}"
             )
         for source_path in sorted(package_path.rglob("*.py")):
+            relative_source = source_path.relative_to(repository_root).as_posix()
+            if relative_source in NON_PRODUCTION_SOURCE_PATHS:
+                continue
             try:
                 tree = ast.parse(source_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, SyntaxError) as exc:

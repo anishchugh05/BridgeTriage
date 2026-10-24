@@ -1,13 +1,27 @@
 from pathlib import Path
 import sys
 
-# Streamlit executes this nested file with ``app/`` as the script directory.
-# Establish the checked-out repository as the import root before any absolute
-# application, model, or planner package import.
+# Streamlit executes this nested file with ``app/`` as the script directory,
+# so ``app/`` lands on ``sys.path`` ahead of the repository root. That lets the
+# bare name ``app`` resolve to this directory as a plain (non-package) module,
+# after which ``from app.config import ...`` raises
+# "No module named 'app.config'; 'app' is not a package". Establish the
+# checked-out repository as the import root, demote the script directory, and
+# drop any ``app`` binding that resolved from the wrong location before any
+# absolute application, model, or planner package import runs.
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _REPOSITORY_ROOT_TEXT = str(REPOSITORY_ROOT)
+_SCRIPT_DIRECTORY_TEXT = str(Path(__file__).resolve().parent)
+
+sys.path[:] = [entry for entry in sys.path if entry != _SCRIPT_DIRECTORY_TEXT]
 if _REPOSITORY_ROOT_TEXT not in sys.path:
     sys.path.insert(0, _REPOSITORY_ROOT_TEXT)
+
+_app_module = sys.modules.get("app")
+if _app_module is not None and not hasattr(_app_module, "__path__"):
+    # ``app`` was bound to the script directory as a plain module; evict it so
+    # the import below re-resolves ``app`` as a package under the repository root.
+    del sys.modules["app"]
 
 import os
 from collections.abc import Callable, Mapping

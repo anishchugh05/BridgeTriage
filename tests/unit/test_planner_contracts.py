@@ -60,6 +60,7 @@ def test_scored_input_uses_exact_contract_and_rejects_duplicate_ids():
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
 def test_scored_input_rejects_boolean_and_nonfinite_numeric_fields(value: object):
     scored = _valid_scored()
+    scored["p_worse"] = scored["p_worse"].astype(object)
     scored.loc[0, "p_worse"] = value
 
     with pytest.raises(ScoredInputValidationError) as caught:

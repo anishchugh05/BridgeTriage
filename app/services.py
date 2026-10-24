@@ -3,7 +3,7 @@
 The cache layer exposes immutable semantic identities and a transactional
 :class:`ModelCache`. :class:`CurrentModelService` composes the public model
 package without copying model logic: it bounds fitting to 2018/2022, scores the
-complete 2022 population, validates both cached values, and reconciles model
+model-eligible 2022 population, validates both cached values, and reconciles model
 identifiers to source records before returning an immutable ranking snapshot.
 The production provider below composes those services with the real planner;
 presentation and runtime error rendering remain outside this module.
@@ -829,15 +829,28 @@ def _default_current_model_configuration() -> tuple[tuple[str, object], ...]:
 def _default_current_scoring_configuration() -> tuple[tuple[str, object], ...]:
     """Capture every scoring knob that can change the current ranking."""
 
-    from model.data import MODELED_COST_DISCLOSURE
+    from model.data import MODELED_COST_DISCLOSURE, SCORED_COLUMNS
+    from model.flight_cost import (
+        BASE_COST_USD,
+        BASE_FLIGHT_MINUTES,
+        DEFAULT_LENGTH_M,
+        DEFAULT_TRAVEL_KM,
+        DEPOTS,
+        FLIGHT_MINUTES_PER_M,
+        LENGTH_COLUMNS,
+        LENGTH_COST_PER_M,
+        MATERIAL_MEDIAN_LENGTH_M,
+        MATERIAL_NAME_MEDIAN_LENGTH_M,
+        RAIL_PATTERN as FLIGHT_COST_RAIL_PATTERN,
+        SPECIAL_CROSSING_MULTIPLIER,
+        TRAVEL_COST_PER_KM,
+        TRAVEL_MINUTES_PER_KM,
+        WATER_PATTERN as FLIGHT_COST_WATER_PATTERN,
+    )
     from model.score import (
         CONSEQUENCE_POOR_MULT,
         CONSEQUENCE_RAIL_MULT,
         CONSEQUENCE_WATER_MULT,
-        COST_BASE,
-        COST_FRACTURE_CRITICAL,
-        COST_UNDERWATER,
-        COST_UNDERWATER_AND_FC,
         DEFAULT_MONTHS_NO_DATE,
         LOOKAHEAD_MONTHS,
         MONTHS_SINCE_INSP_CAP,
@@ -848,12 +861,34 @@ def _default_current_scoring_configuration() -> tuple[tuple[str, object], ...]:
     )
 
     return (
-        ("contract_version", "current-score-v1"),
+        ("contract_version", "current-score-v2"),
         ("output_columns", tuple(OUTPUT_COLUMNS)),
-        ("cost_base", COST_BASE),
-        ("cost_underwater", COST_UNDERWATER),
-        ("cost_fracture_critical", COST_FRACTURE_CRITICAL),
-        ("cost_underwater_and_fracture_critical", COST_UNDERWATER_AND_FC),
+        ("planner_projection_columns", tuple(SCORED_COLUMNS)),
+        (
+            "planner_score_projection",
+            "p_worse*consequence/insp_cost",
+        ),
+        ("flight_cost_base_usd", BASE_COST_USD),
+        ("flight_length_columns", tuple(LENGTH_COLUMNS)),
+        ("flight_length_cost_per_m", LENGTH_COST_PER_M),
+        ("flight_special_crossing_multiplier", SPECIAL_CROSSING_MULTIPLIER),
+        ("flight_travel_cost_per_km", TRAVEL_COST_PER_KM),
+        ("flight_base_minutes", BASE_FLIGHT_MINUTES),
+        ("flight_minutes_per_m", FLIGHT_MINUTES_PER_M),
+        ("flight_travel_minutes_per_km", TRAVEL_MINUTES_PER_KM),
+        ("flight_default_length_m", DEFAULT_LENGTH_M),
+        ("flight_default_travel_km", DEFAULT_TRAVEL_KM),
+        ("flight_depots", tuple(sorted(DEPOTS.items()))),
+        (
+            "flight_material_median_lengths",
+            tuple(sorted(MATERIAL_MEDIAN_LENGTH_M.items())),
+        ),
+        (
+            "flight_material_name_median_lengths",
+            tuple(sorted(MATERIAL_NAME_MEDIAN_LENGTH_M.items())),
+        ),
+        ("flight_rail_pattern", FLIGHT_COST_RAIL_PATTERN.pattern),
+        ("flight_water_pattern", FLIGHT_COST_WATER_PATTERN.pattern),
         ("consequence_rail_multiplier", CONSEQUENCE_RAIL_MULT),
         ("consequence_water_multiplier", CONSEQUENCE_WATER_MULT),
         ("consequence_poor_multiplier", CONSEQUENCE_POOR_MULT),
@@ -861,8 +896,8 @@ def _default_current_scoring_configuration() -> tuple[tuple[str, object], ...]:
         ("lookahead_months", LOOKAHEAD_MONTHS),
         ("default_months_without_date", DEFAULT_MONTHS_NO_DATE),
         ("months_since_inspection_cap", MONTHS_SINCE_INSP_CAP),
-        ("rail_pattern", RAIL_PATTERN.pattern),
-        ("water_pattern", WATER_PATTERN.pattern),
+        ("consequence_rail_pattern", RAIL_PATTERN.pattern),
+        ("consequence_water_pattern", WATER_PATTERN.pattern),
         ("modeled_cost_disclosure", MODELED_COST_DISCLOSURE),
         ("repair_cost_input", "excluded"),
     )
@@ -926,6 +961,14 @@ def validate_current_model_state(model_state: object) -> None:
         raise CurrentModelValidationError(
             "Current model state failed validation: " + ", ".join(issues)
         )
+
+
+def _project_model_scores(scored: pd.DataFrame) -> pd.DataFrame:
+    """Apply the authoritative model-to-planner score projection."""
+
+    from model import project_scored_table
+
+    return project_scored_table(scored)
 
 
 class CurrentPanelBundle(Protocol):
@@ -1171,13 +1214,22 @@ class CurrentModelService:
     def _ranking_population(adapted_panel: pd.DataFrame) -> pd.DataFrame:
         if not isinstance(adapted_panel, pd.DataFrame):
             raise TypeError("adapted_panel must be a pandas DataFrame.")
-        if "year" not in adapted_panel.columns or "id" not in adapted_panel.columns:
+        if (
+            "year" not in adapted_panel.columns
+            or "id" not in adapted_panel.columns
+            or "worst_rating" not in adapted_panel.columns
+        ):
             raise CurrentModelValidationError(
-                "Adapted panel requires year and id columns."
+                "Adapted panel requires year, id, and worst_rating columns."
             )
 
+        # The authoritative model omits source rows whose published
+        # worst_rating is not applicable. Define the app ranking population at
+        # this same boundary so score validation and source reconciliation use
+        # one identical, explicit set of identifiers.
         ranking = adapted_panel.loc[
             adapted_panel["year"].eq(CURRENT_RANKING_YEAR)
+            & adapted_panel["worst_rating"].notna()
         ].copy(deep=True)
         ranking_ids = tuple(ranking["id"].tolist())
         if not ranking_ids:
@@ -1246,7 +1298,7 @@ class CurrentModelService:
         *,
         force_recompute: bool = False,
     ) -> pd.DataFrame:
-        """Score and cache every 2022 bridge before any map projection."""
+        """Score and cache every model-eligible 2022 bridge before mapping."""
 
         from model import validate_scored_table
 
@@ -1256,11 +1308,12 @@ class CurrentModelService:
         ranking_ids = tuple(ranking_population["id"].tolist())
 
         def operation() -> pd.DataFrame:
-            return self._score_fn(
+            full_scored = self._score_fn(
                 ranking_population.copy(deep=True),
                 rates,
                 pd.Timestamp(CURRENT_RANKING_AS_OF),
             )
+            return _project_model_scores(full_scored)
 
         def validator(scored: pd.DataFrame) -> None:
             validate_scored_table(scored, ranking_ids)
@@ -1322,6 +1375,10 @@ class CurrentModelService:
         from model import reconcile_scored_table
 
         source_2022 = self._source_ranking_population(source_panel)
+        scored_ids = set(scored["id"].tolist())
+        source_2022 = source_2022.loc[
+            source_2022["structure_id"].isin(scored_ids)
+        ].copy(deep=True)
         records = reconcile_scored_table(source_2022, scored)
         return CurrentRanking(model_identity, scored, records)
 

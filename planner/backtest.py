@@ -22,7 +22,7 @@ from typing import Final, Literal, TypeAlias
 import pandas as pd
 
 from model import fit_decline, is_safety_drop, score
-from model.data import validate_scored_table
+from model.data import project_scored_table, validate_scored_table
 
 from .contracts import (
     BUDGET_MODE,
@@ -446,17 +446,43 @@ def build_historical_plan(
     fit_rows, candidates = _historical_slices(panel_through_2018)
     canonical_budgets = _canonical_budgets(budgets)
 
-    candidate_ids = tuple(sorted(candidates["id"].tolist()))
+    requested_candidate_ids = tuple(sorted(candidates["id"].tolist()))
     rates = fit_fn(
         fit_rows.copy(deep=True),
         BACKTEST_FIT_START_YEAR,
         BACKTEST_FIT_END_YEAR,
     )
-    scored = score_fn(
+    full_scored = score_fn(
         candidates.copy(deep=True),
         rates,
         BACKTEST_AS_OF,
     )
+    scored = project_scored_table(full_scored)
+
+    if "id" not in scored.columns:
+        raise HistoricalPlanningError(("backtest.scored.id.required",))
+    scored_ids = tuple(scored["id"].tolist())
+    requested_set = set(requested_candidate_ids)
+    scored_set = set(scored_ids)
+    if not scored_ids or not scored_set.issubset(requested_set):
+        raise HistoricalPlanningError(("backtest.scored.population",))
+
+    # The model's established contract omits records whose published
+    # worst_rating is not applicable. Only those rows may be absent from the
+    # common planning population; all methods then use the identical scored
+    # IDs and modeled costs.
+    missing_ids = requested_set - scored_set
+    if missing_ids:
+        missing_rows = candidates.loc[candidates["id"].isin(missing_ids)]
+        if missing_rows["worst_rating"].notna().any():
+            raise HistoricalPlanningError(
+                ("backtest.scored.complete_model_eligible_population",)
+            )
+        candidates = candidates.loc[candidates["id"].isin(scored_set)].copy(
+            deep=True
+        )
+
+    candidate_ids = tuple(sorted(scored_ids))
     validate_scored_table(scored, candidate_ids)
 
     costs = _costs_by_id(scored)

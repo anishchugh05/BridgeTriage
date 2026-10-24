@@ -14,6 +14,8 @@ import re
 
 import pandas as pd
 
+from .data import MODELED_COST_DISCLOSURE
+
 # Meter-valued panel column names, in priority order.
 LENGTH_COLUMNS = (
     "length_m",
@@ -193,7 +195,7 @@ def flight_cost(row):
         location_fragment = f"{travel_km:.0f} km from {depot}"
 
     fragments = [
-        f"drone est. ${cost_usd:,.0f}",
+        f"drone est. {MODELED_COST_DISCLOSURE} ${cost_usd:,.0f}",
         f"{flight_minutes:.0f} min",
         location_fragment,
     ]

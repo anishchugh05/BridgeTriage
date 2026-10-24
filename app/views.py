@@ -422,7 +422,7 @@ def render_map(
         initial_view_state=pdk.ViewState(**MAP_VIEW_STATE),
         tooltip=dict(MAP_TOOLTIP),
     )
-    ui.pydeck_chart(deck, use_container_width=True)
+    ui.pydeck_chart(deck, width="stretch")
     ui.caption(
         "Red markers are in the shared statewide selection. "
         "Unselected color represents score; marker size represents ADT."
@@ -518,7 +518,7 @@ def render_budget(
     )
     ui.dataframe(
         rows,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={"insp_cost": MODELED_COST_COLUMN_LABEL},
     )
@@ -665,7 +665,10 @@ def prepare_backtest_chart(value: object) -> pd.DataFrame:
 
     groups = _validated_backtest_groups(value)
     budgets = sorted(groups)
-    index_values = [groups[budget]["ours"][0] for budget in budgets]
+    index_values = [
+        int(budget) if budget == budget.to_integral_value() else float(budget)
+        for budget in budgets
+    ]
     chart = pd.DataFrame(
         {
             method: [groups[budget][method][1] for budget in budgets]
@@ -768,7 +771,7 @@ def render_backtest(
     ui.subheader(BACKTEST_SECTION_LABEL)
 
     chart = prepare_backtest_chart(context)
-    ui.line_chart(chart, use_container_width=True)
+    ui.line_chart(chart, width="stretch")
 
     budget = context.active_budget if comparison_budget is None else comparison_budget
     try:
@@ -951,7 +954,7 @@ def render_bridge_detail(
         return None
 
     detail = prepare_bridge_detail(context, structure_id)
-    ui.dataframe(detail.history, use_container_width=True)
+    ui.dataframe(detail.history, width="stretch")
     ui.markdown(f"**Bridge:** {detail.structure_id}")
     ui.markdown(f"**Carries:** {detail.carries}")
     ui.markdown(f"**Crosses:** {detail.crosses}")
@@ -1041,7 +1044,7 @@ def render_hazards(
     )
     if rows.empty:
         ui.info("No hazard bridges are present in the active statewide Selection.")
-    ui.dataframe(rows, use_container_width=True, hide_index=True)
+    ui.dataframe(rows, width="stretch", hide_index=True)
     return rows
 
 
@@ -1099,7 +1102,7 @@ def render_export(
     ui.subheader(EXPORT_SECTION_LABEL)
     ui.dataframe(
         rows,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={"insp_cost": MODELED_COST_COLUMN_LABEL},
     )
@@ -1134,7 +1137,9 @@ def prepare_methods_text(context: ViewContext) -> str:
         "The source is the Federal Highway Administration National Bridge "
         "Inventory (NBI) for Massachusetts, with snapshots from 2012, 2016, "
         "2018, and 2022. The current model fits the `2018` to `2022` interval "
-        "and scores the complete 2022 ranking at Ranking_As_Of `2022-04-01`.\n\n"
+        "and scores model-eligible 2022 bridges at Ranking_As_Of `2022-04-01`; "
+        "records without an applicable published `worst_rating` remain outside "
+        "the model ranking rather than receiving an invented condition.\n\n"
         "**Backtest timeline**\n\n"
         "The historical backtest fits decline rates from `2012` to `2016`, "
         "uses only information available for the `2018` selection, and then "
@@ -1146,10 +1151,12 @@ def prepare_methods_text(context: ViewContext) -> str:
         "4 or lower and the ending rating decreases by at least one. Rebuilt "
         "ending records are excluded from decline fitting and outcome "
         "evaluation. NBI does not provide a usable per-bridge inspection "
-        "cost, so `insp_cost` uses a modeled inspection-cost estimate: $3,000 "
-        "normally, $8,000 underwater, $6,000 fracture-critical, or $12,000 "
-        "when both apply. These are estimates, not quotes or repair costs, and "
-        "source `improvement_cost` is never used as inspection cost.\n\n"
+        "cost, so `insp_cost` uses a modeled inspection-cost estimate from "
+        "the drone-flight model: a $1,500 base plus $8 per estimated structure "
+        "meter, a 1.4× water/rail access factor when applicable, and $2 per "
+        "one-way kilometer from the nearest configured depot. These are "
+        "estimates, not quotes or repair costs, and source "
+        "`improvement_cost` is never used as inspection cost.\n\n"
         "**Schema mapping and reconciliation**\n\n"
         "At the sole model boundary, source `structure_id` maps to `id`, "
         "`insp_freq_months` maps to `insp_freq_mo`, and `year_built` is derived "
