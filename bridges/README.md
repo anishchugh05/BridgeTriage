@@ -60,6 +60,48 @@ insp_date
   or handled on purpose. There are about 300 per year.
 - Exclude rebuilt rows from training and from the backtest.
 
+## Handoff for B and C
+
+### Getting the data
+
+    git fetch origin
+    git checkout person-a-data
+    git pull
+    pip install -r requirements.txt
+
+Load the panel with pd.read_parquet("bridges/panel.parquet"). Wire your code
+against fake.parquet first, then swap to the real panel. Both files carry the
+same 21 columns in the same order.
+
+### Person B (decline model, model/)
+
+- Read panel.parquet. Drop rebuilt rows and drop null worst_rating rows.
+- Label per the drop definition: worst_rating falls by 1 or more between two
+  appearances of the same bridge.
+- Use only the 4 year gaps (2012 to 2016, 2018 to 2022) so the horizon matches.
+- insp_date is a datetime. Compute time since inspection as asof minus
+  insp_date. This is the "time since inspection" input to the score.
+- The 2012 rows all have rebuilt = False by construction (no earlier year to
+  compare), so do not read the 2012 rebuilt column as a full history flag.
+- Suggested signatures: fit_decline(panel, start, end) and
+  score(table, rates, asof).
+
+### Person C (picker and backtest, planner/, app/)
+
+- Read panel.parquet and call B's score. Join on structure_id, which is unique
+  per year.
+- Backtest on a 4 year gap: fit on up to 2018, pick using only 2018 and earlier
+  information, then check against the actual 2022 drops. Exclude rebuilt rows.
+- improvement_cost is repair cost, not inspection cost. There is no per bridge
+  inspection cost in NBI, so use your own insp_cost placeholder or rate.
+- lat and lon are decimal degrees ready for mapping. county is a readable name
+  ready for grouping.
+
+### Schema change policy
+
+The 21 columns are a contract. If you need a new field, ask Person A to add it
+(appended at the end so positions do not shift). Do not rename columns on your
+side.
 ## Notes
 
 - The 2022 raw file has one colliding structure number. That duplicate is
