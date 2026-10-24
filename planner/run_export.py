@@ -14,7 +14,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from planner.backtest import (  # noqa: E402
+from planner.harness import (  # noqa: E402
     adapt_panel,
     apply_exclusion_and_label,
     bootstrap_gap_ci,

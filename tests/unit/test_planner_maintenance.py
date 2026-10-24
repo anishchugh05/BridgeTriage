@@ -25,7 +25,7 @@ def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 
 builtins.__import__ = blocked_import
-import planner.backtest
+import planner.harness
 """
     completed = subprocess.run(
         [sys.executable, "-c", code],
@@ -63,7 +63,7 @@ def test_pick_ignores_invalid_scores_for_non_candidates() -> None:
     """R5.7 extras cannot affect validation or selection."""
     import numpy as np
 
-    from planner.backtest import pick
+    from planner.harness import pick
 
     candidates, pool_cost_info = _candidate_fixture()
     selected = pick(
@@ -81,7 +81,7 @@ def test_pick_rejects_unknown_tiebreak() -> None:
     """Direct picker calls reject values outside the documented enum."""
     import pytest
 
-    from planner.backtest import pick
+    from planner.harness import pick
 
     candidates, pool_cost_info = _candidate_fixture()
     with pytest.raises(ValueError, match="tiebreak"):

@@ -20,8 +20,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from planner import backtest
-from planner.backtest import (
+from planner import harness as backtest
+from planner.harness import (
     BAND_K,
     EXCLUSION_REASONS,
     FAKE_SEEDS,
