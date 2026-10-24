@@ -24,3 +24,5 @@
 - [x] 14. Write bridges/README.md for teammates (schema, definitions, how to
       load, which file, uneven gaps, null and rebuilt warnings).
 - [x] 15. Update the spec and push to origin/person-a-data.
+- [x] 16. Add insp_date (item 090 MMYY to datetime) as column 21 in the schema,
+      loader, and fake table. Keep existing column positions unchanged.

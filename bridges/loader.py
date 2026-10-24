@@ -13,6 +13,7 @@ SCHEMA = [
     "deck", "super", "sub", "worst_rating", "insp_freq_months",
     "fracture_critical", "underwater", "year_recon", "rebuilt",
     "lat", "lon", "carries", "crosses", "improvement_cost",
+    "insp_date",
 ]
 
 # NBI item suffix we match (column ending in _SUFFIX). Verified in MA22.txt.
@@ -102,6 +103,23 @@ def county_name(val):
         return None
     return COUNTY_FIPS.get(s.zfill(3), s.zfill(3))
 
+def to_insp_date(val):
+    # Item 090 is the last inspection date packed as MMYY, month without a
+    # leading zero, so 3 or 4 digits. Returns a month start timestamp or None.
+    s = "".join(ch for ch in str(val).strip() if ch.isdigit())
+    if s == "" or set(s) == {"0"}:
+        return None
+    s = s.zfill(4)
+    mm = int(s[0:2])
+    yy = int(s[2:4])
+    if mm < 1 or mm > 12:
+        return None
+    year = 2000 + yy if yy <= 30 else 1900 + yy
+    try:
+        return pd.Timestamp(year=year, month=mm, day=1)
+    except ValueError:
+        return None
+
 def load_year(year):
     df = pd.read_csv(
         raw_path(year), dtype=str, encoding="latin-1",
@@ -158,6 +176,7 @@ def load_year(year):
     out["carries"] = g("carries")
     out["crosses"] = g("crosses")
     out["improvement_cost"] = g("improvement_cost").map(to_int)
+    out["insp_date"] = g("insp_date").map(to_insp_date)
 
     out = out[SCHEMA]
     print(f"[{year}] rows={len(out)} worst_rating non-null={out['worst_rating'].notna().sum()} "
