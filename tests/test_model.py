@@ -148,7 +148,8 @@ def test_score_output_clean(panel, rates):
 
     assert list(scored.columns) == [
         "id", "p_worse", "consequence", "insp_cost", "flight_minutes",
-        "expected_drops_per_10k", "score", "reason"
+        "expected_drops_per_10k", "score", "voi", "decision", "reason",
+        "reason_human"
     ]
     assert len(scored) == len(table)
 
@@ -325,7 +326,8 @@ def test_logistic_model_scores(panel):
 
     assert list(scored.columns) == [
         "id", "p_worse", "consequence", "insp_cost", "flight_minutes",
-        "expected_drops_per_10k", "score", "reason"
+        "expected_drops_per_10k", "score", "voi", "decision", "reason",
+        "reason_human"
     ]
     assert not scored.isna().any().any()
     assert (scored["p_worse"] >= 0).all() and (scored["p_worse"] <= 1).all()
@@ -429,7 +431,8 @@ def test_null_worst_rating_is_skipped(rates):
     assert scored.empty
     assert list(scored.columns) == [
         "id", "p_worse", "consequence", "insp_cost", "flight_minutes",
-        "expected_drops_per_10k", "score", "reason"
+        "expected_drops_per_10k", "score", "voi", "decision", "reason",
+        "reason_human"
     ]
 
 
@@ -484,3 +487,9 @@ def test_batch_run_writes_both_score_files(tmp_path, panel, rates, monkeypatch):
         assert (scored["flight_minutes"] > 0).all()
         assert scored["reason"].str.contains("drone est.", regex=False).all()
         assert np.allclose(scored["score"], scored["expected_drops_per_10k"])
+        assert "voi" in scored.columns
+        assert "decision" in scored.columns
+        assert set(scored["decision"].unique()) <= {
+            "fix_track", "fly", "monitor"
+        }
+        assert scored["reason"].str.contains("decision ", regex=False).all()
