@@ -240,6 +240,18 @@
         "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
         "timestamp": 1792866693430
       }
+    ],
+    "22. Run baselines on real data — required": [
+      {
+        "executionId": "5d1a19a7-d2f2-42d9-9fd6-88e592c79099",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792873402522
+      },
+      {
+        "executionId": "5d1a19a7-d2f2-42d9-9fd6-88e592c79099",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792873527806
+      }
     ]
   }
 }

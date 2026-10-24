@@ -126,7 +126,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R1, R2, Assumptions 2, 8_
   - Demo: `python -c "from planner.backtest import adapt_panel; a,b=adapt_panel(); print(len(a), len(b))"` (prints `5215 5251`)
 
-- [ ] 22. Run baselines on real data — required
+- [x] 22. Run baselines on real data — required
   - `run_backtest(df_18, df_22, county_fee=5.0, tiebreaks=("adt","random"))` on the adapted panel data, budgets as usual
   - Print: pool size, exclusion counts by reason, number of safety-drop decliners (count_worse_in_pool), then recall and weighted recall per method per budget — show only non-random_avg-per-seed rows (aggregate rows for random_avg)
   - Note in the output that flat inspect_cost makes value-per-cost ranking equal raw-score ranking ("placeholder units")
