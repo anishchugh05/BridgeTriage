@@ -1,5 +1,5 @@
-data/*.txt
-data/*.csv
+data/
+!data/.gitkeep
 raw/
 __pycache__/
 .venv/
