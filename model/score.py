@@ -14,8 +14,11 @@ Rules honored here (see product.md / contract.md):
 - No lookahead: ``fit_decline`` reads only rows in years ``start`` and ``end``.
 - NBI "N" is not-applicable: it arrives as NaN and is treated as missing, never
   as a rating of 0.
-- Every scored row carries a one-line ``reason``; when ``insp_cost`` is missing
-  a placeholder is used and the reason says so.
+- Every scored row carries a one-line ``reason``; when a valid per-bridge
+  ``insp_cost`` is unavailable, a modeled inspection-cost estimate is used and
+  disclosed with the exact phrase ``modeled inspection-cost estimate``. The
+  source ``improvement_cost`` is a repair cost and is never used as inspection
+  cost.
 """
 
 from __future__ import annotations
@@ -45,8 +48,10 @@ AGE_BAND_LABELS = ["0-24", "25-49", "50-74", "75+"]
 # estimate is pulled toward its coarser parent group.
 SHRINKAGE_K = 20.0
 
-# Placeholder inspection costs (USD) by inspection difficulty, used only when
-# the panel's insp_cost is missing. These are estimates, not quotes.
+# Modeled inspection-cost estimates (USD) by inspection difficulty, used only
+# when a valid per-bridge insp_cost is unavailable. These are estimates, not
+# quotes; source improvement_cost is a distinct repair cost and is never used
+# to derive inspection cost.
 COST_BASE = 3_000.0
 COST_UNDERWATER = 8_000.0
 COST_FRACTURE_CRITICAL = 6_000.0
@@ -699,7 +704,7 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
             )
         bits.append(f"p_worse {p_worse:.2f}")
         if used_placeholder:
-            bits.append(f"placeholder cost ${insp_cost:,.0f}")
+            bits.append(f"modeled inspection-cost estimate ${insp_cost:,.0f}")
         reason = "; ".join(bits)
 
         out.append(
