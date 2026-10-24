@@ -134,6 +134,121 @@ def load_and_validate(df_2018, df_2022):
     return out18, out22, index
 
 # ---------------------------------------------------------------------------
+# Algorithm 2: apply_exclusion_and_label (R1.4, R2, R3, R4.4)
+# ---------------------------------------------------------------------------
+
+EXCLUSION_REASONS = (
+    "missing_2022", "rebuilt", "nan_min_2018", "nan_min_2022",
+    "missing_yearbuilt_adt", "duplicate_id",
+)
+
+
+def apply_exclusion_and_label(df_2018, df_2022, index, county_fee):
+    """Build the candidate pool, outcomes, and pool cost info (Algorithm 2).
+
+    Exclusion reasons, checked in order per 2018 row (R2): the id is
+    duplicated within either year's table (ALL rows of a duplicated id are
+    excluded, counted under 'duplicate_id'); the id is absent from 2022
+    ('missing_2022' — bridges replaced under a new id fall out here, R2.4);
+    rebuilt in 2022; min_2018 NaN; min_2022 NaN; year_built NaN or <= 0 or
+    adt NaN ('missing_yearbuilt_adt'). min = min(deck, super, sub) ignoring
+    NaN (R3.1); an all-NaN triple yields NaN.
+
+    worse = is_safety_drop(min_2018, min_2022) = (min_2022 < min_2018) and
+    (min_2022 <= 4) (R3.2); a decline staying at 5 or above (e.g. 7 -> 5)
+    is NOT worse. The filter uses 2022 information and is identical for all
+    methods (R2.2). Input tables are never modified (R2.3).
+
+    Returns (candidates, outcomes, pool_cost_info):
+      candidates: DataFrame indexed by structure_id (str) with columns
+        county (str), inspect_cost (float), adt (float), year_built (int),
+        min_2018 (float).
+      outcomes: dict structure_id -> {min_2018, min_2022, worse, adt}.
+      pool_cost_info: {'total_cost_pool': sum(inspect_cost over POOL) +
+        n_unique_pool_counties * county_fee (POOL ONLY, R4.4),
+        'unique_counties': set[str], 'exclusion_counts': per-reason ints}.
+    """
+    # Step 0: duplicated structure_ids within either year — exclude all rows
+    # of any duplicated id, counted under 'duplicate_id' (R2.1).
+    dup18 = df_2018["structure_id"].duplicated(keep=False)
+    dup22 = df_2022["structure_id"].duplicated(keep=False)
+    dup_ids = (
+        set(df_2018.loc[dup18, "structure_id"])
+        | set(df_2022.loc[dup22, "structure_id"])
+    )
+
+    # 2022 lookups, keyed by structure_id (values for duplicated ids are
+    # never used: those 2018 rows are excluded above).
+    min22_by_id = dict(
+        zip(df_2022["structure_id"], df_2022[list(RATING_COLS)].min(axis=1))
+    )
+    rebuilt_flags = pd.to_numeric(df_2022["rebuilt"], errors="coerce")
+    rebuilt_by_id = dict(
+        zip(df_2022["structure_id"], rebuilt_flags.fillna(0).astype(bool))
+    )
+
+    # 2018 columns as arrays; min ignores NaN, all-NaN triple -> NaN.
+    ids = df_2018["structure_id"].to_numpy()
+    counties = df_2018["county"].astype(str).to_numpy()
+    year_built = pd.to_numeric(df_2018["year_built"], errors="coerce").to_numpy(dtype=float)
+    adt = df_2018["adt"].to_numpy(dtype=float)
+    inspect_cost = df_2018["inspect_cost"].to_numpy(dtype=float)
+    min18 = df_2018[list(RATING_COLS)].min(axis=1).to_numpy()
+
+    exclusion_counts = {reason: 0 for reason in EXCLUSION_REASONS}
+    pool_rows = {}
+    outcomes = {}
+    for sid, county, yb, a, cost, m18 in zip(
+        ids, counties, year_built, adt, inspect_cost, min18
+    ):
+        if sid in dup_ids:
+            exclusion_counts["duplicate_id"] += 1
+            continue
+        if sid not in index:
+            exclusion_counts["missing_2022"] += 1
+            continue
+        if rebuilt_by_id[sid]:
+            exclusion_counts["rebuilt"] += 1
+            continue
+        if np.isnan(m18):
+            exclusion_counts["nan_min_2018"] += 1
+            continue
+        m22 = min22_by_id[sid]
+        if np.isnan(m22):
+            exclusion_counts["nan_min_2022"] += 1
+            continue
+        if np.isnan(yb) or yb <= 0 or np.isnan(a):
+            exclusion_counts["missing_yearbuilt_adt"] += 1
+            continue
+        pool_rows[sid] = (county, float(cost), float(a), int(yb), float(m18))
+        outcomes[sid] = {
+            "min_2018": float(m18),
+            "min_2022": float(m22),
+            "worse": bool(is_safety_drop(m18, m22)),
+            "adt": float(a),
+        }
+
+    candidates = pd.DataFrame.from_dict(
+        pool_rows,
+        orient="index",
+        columns=["county", "inspect_cost", "adt", "year_built", "min_2018"],
+    )
+    candidates.index.name = "structure_id"
+    candidates = candidates.astype({
+        "county": str, "inspect_cost": float, "adt": float,
+        "year_built": int, "min_2018": float,
+    })
+
+    unique_counties = set(candidates["county"])
+    pool_cost_info = {
+        "total_cost_pool": float(candidates["inspect_cost"].sum())
+        + len(unique_counties) * float(county_fee),
+        "unique_counties": unique_counties,
+        "exclusion_counts": exclusion_counts,
+    }
+    return candidates, outcomes, pool_cost_info
+
+# ---------------------------------------------------------------------------
 # Algorithm 9: make_fake synthetic data generator (R13)
 # ---------------------------------------------------------------------------
 

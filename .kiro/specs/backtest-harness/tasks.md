@@ -25,7 +25,7 @@ except ValueError: print('deck NaN ok, index ok, inspect_cost=0 rejected')"`
 try: make_fake(100,2,0.0,0.0); assert False
 except ValueError: print('signal=0,noise=0 rejected')"`
 
-- [ ] 3. Implement exclusion and labeling pass
+- [x] 3. Implement exclusion and labeling pass
   - `apply_exclusion_and_label` per Algorithm 2 (R1.4, R2, R3, R4.4): skip rebuilt / missing in 2022 / NaN min either side / year_built NaN or <=0 / adt NaN / duplicate structure_id (all rows of a duplicated id excluded, count reported); `worse = is_safety_drop(min_2018, min_2022) = (min_2022 < min_2018) and (min_2022 <= 4)` (defined locally in backtest.py, not imported from model); candidates DataFrame indexed by structure_id with columns county, inspect_cost, adt, year_built, min_2018; pool_cost_info with total_cost_pool (POOL only) and per-reason exclusion_counts
   - _Requirements: R2, R3, R4.4_
   - Demo: `python -c "import pandas as pd; from planner.backtest import *; a=pd.DataFrame({'structure_id':['a','b','c','d','e','f'],'county':['x','x','y','y','y','y'],'year_built':[1950,1950,1950,1950,None,1950],'adt':[10.0]*6,'deck':[5,5,5,5,5,7],'super':[5,5,5,5,5,7],'sub':[5,5,5,5,5,7],'inspect_cost':[1.0]*6}); b=pd.DataFrame({'structure_id':['a','b','c','e','f'],'deck':[4,5,5,5,5],'super':[5,5,5,5,5],'sub':[5,5,5,5,5],'rebuilt':[0,1,0,0,0]}); c,o,p=apply_exclusion_and_label(*load_and_validate(a,b),5.0); assert set(c.index)=={'a','c','f'} and o['a']['worse'] and not o['c']['worse'] and not o['f']['worse'] and p['total_cost_pool']==3+2*5 and p['exclusion_counts']['rebuilt']==1 and p['exclusion_counts']['missing_2022']==1; print('a worse (5->4 safety drop); f NOT worse (7->5 stays above 4); pool cost 13')"`
