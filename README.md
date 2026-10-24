@@ -2,17 +2,32 @@
 
 This repository contains the Streamlit decision-support application for prioritizing additional Massachusetts bridge inspections. Production mode uses the version-controlled real Massachusetts bridge panel, the repository's real model service, deterministic planner, and measured backtest engine. Demo mode is an explicitly selected, fabricated, visibly labeled alternative; it is never a production fallback.
 
-## Clean-checkout local setup
+## Current production release
 
-Run all commands from the repository root. The supported runtime is **Python 3.11**, as declared in `.python-version`.
+- **Public repository:** [https://github.com/anishchugh05/hackachusetts-2027](https://github.com/anishchugh05/hackachusetts-2027)
+- **Deployment branch:** [`person-a-app`](https://github.com/anishchugh05/hackachusetts-2027/tree/person-a-app)
+- **Production commit:** [`8d93c21`](https://github.com/anishchugh05/hackachusetts-2027/commit/8d93c21cb67b1d2acea8aa35da4d930a30509d96)
+- **Validation:** the [GitHub Actions `Validate` run](https://github.com/anishchugh05/hackachusetts-2027/actions/runs/40135153272) for that commit completed successfully. Local validation reported **99 tests passing**, and the production smoke check passed in about **17 seconds**.
+- **Hosted-app status:** this guide does not claim a public Streamlit URL is available yet. Use the Community Cloud checklist below to create or verify a deployment.
+
+## Teammate handoff: pull and run
+
+Run all commands from the repository root after cloning. For a fresh checkout of the deployment branch:
 
 ```text
-git clone https://github.com/<github-owner>/<repository>.git
-cd <repository>
-git checkout <branch>
+git clone --branch person-a-app --single-branch https://github.com/anishchugh05/hackachusetts-2027.git
+cd hackachusetts-2027
 ```
 
-Create and activate an isolated Python 3.11 environment.
+For an existing clone, update the same branch without rewriting local history:
+
+```text
+git fetch origin
+git switch person-a-app
+git pull --ff-only origin person-a-app
+```
+
+The supported runtime is **Python 3.11**, as declared in `.python-version`. Create and activate an isolated environment.
 
 **PowerShell (Windows):**
 
@@ -30,15 +45,10 @@ source .venv/bin/activate
 python --version
 ```
 
-`python --version` must report Python 3.11.x. Install the exact, hashed runtime lock:
+`python --version` must report Python 3.11.x. Install the exact, hashed runtime lock and launch the application from the repository root:
 
 ```text
 python -m pip install --require-hashes -r requirements.txt
-```
-
-Start the application from the repository root:
-
-```text
 streamlit run app/app.py
 ```
 
@@ -60,7 +70,9 @@ Production mode uses only these real, version-controlled components:
 - **Real_Planner:** the repository `planner` package
 - **Backtest_Engine:** the real historical backtest exported by `planner`
 
-To launch explicit production mode:
+Production never substitutes `app/stubs.py`, fabricated data, demo calculations, or any other fallback. If a production data, schema, model, planner, or backtest component fails, the application stays in production mode, keeps demo mode deactivated, and displays a user-safe error for the failed component. Output that depends on the failure is suppressed while unrelated validated output may remain available.
+
+To launch explicit production mode on PowerShell:
 
 ```powershell
 $env:BRIDGE_APP_MODE = "production"
@@ -81,8 +93,6 @@ BRIDGE_APP_MODE=production streamlit run app/app.py
 BRIDGE_APP_MODE=demo streamlit run app/app.py
 ```
 
-If a production data, schema, model, planner, or backtest component fails, the application remains in production mode, keeps demo mode deactivated, and displays a user-safe error for the failed component. It never substitutes fabricated data or demo calculations. Output that depends on the failed component is suppressed, while unrelated validated output may remain available.
-
 ## Production data asset
 
 Production requires exactly this version-controlled runtime data asset:
@@ -95,7 +105,7 @@ The application resolves the asset relative to the repository, not the caller's 
 
 ## Test and smoke validation
 
-Install test tooling separately, after the runtime lock:
+Install test tooling separately after the runtime lock:
 
 ```text
 python -m pip install --require-hashes -r requirements.txt
@@ -122,21 +132,18 @@ Or on Linux/macOS:
 BRIDGE_APP_MODE=production python scripts/smoke_app.py
 ```
 
-The smoke check uses the checked-in real panel and requires no external network request.
+The smoke check uses the checked-in real panel, blocks unexpected external network access, and enforces a 120-second initial-render limit.
 
-## Streamlit Community Cloud deployment
+## Streamlit Community Cloud deployment checklist
 
-Create the app in Streamlit Community Cloud with these settings:
+Create or configure the app with these exact values:
 
-| Setting | Value |
-| --- | --- |
-| Repository | `<github-owner>/<repository>` |
-| Branch | `<branch>` |
-| Main file path | `app/app.py` |
-| Python version (Advanced settings) | `3.11` |
+- [ ] **Repository:** `https://github.com/anishchugh05/hackachusetts-2027`
+- [ ] **Branch:** `person-a-app`
+- [ ] **Main file path:** `app/app.py`
+- [ ] **Python version (Advanced settings):** `3.11`
+- [ ] **Secrets:** leave the secrets field empty; the application requires no credentials, API keys, or `.streamlit/secrets.toml`
+- [ ] **Environment:** leave `BRIDGE_APP_MODE` unset so the deployment starts in production mode
+- [ ] **Pre-deployment check:** run `python scripts/validate_dependencies.py`, `python -m pytest`, and `BRIDGE_APP_MODE=production python scripts/smoke_app.py` against the revision being deployed
 
-Leave `BRIDGE_APP_MODE` unset so the cloud deployment starts in production mode. Community Cloud installs the root `requirements.txt` runtime lock and launches `app/app.py`; no editable package installation or data preparation is required.
-
-This application requires **no secrets, credentials, API keys, or `.streamlit/secrets.toml` entries**. Leave the Community Cloud secrets field empty. The required real dataset is already version-controlled at `bridges/panel.parquet`, and production startup performs no generation or network download.
-
-Before deploying, run the test and production smoke commands above against the revision selected by `<branch>`. A successful initial production render identifies Real_Dataset, Real_Model_Service, Real_Planner, and Backtest_Engine and shows the current-ranking headline and map without the demo indicator.
+Community Cloud installs the root `requirements.txt` runtime lock and launches `app/app.py`; no editable package installation, data preparation, bridge-data generation, or bridge-data download is required. A successful initial production render identifies Real_Dataset, Real_Model_Service, Real_Planner, and Backtest_Engine and shows the current-ranking headline and map without the demo indicator.
