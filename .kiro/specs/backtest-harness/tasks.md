@@ -18,7 +18,7 @@ try: load_and_validate(bad,b); assert False
 except ValueError: print('deck NaN ok, index ok, inspect_cost=0 rejected')"`
 
 - [x] 2. Implement make_fake synthetic data generator
-  - `make_fake` per Algorithm 9 (R13): returns `(df_2018, df_2022, truth)`; min_2018 ≥ 1 and ≥ 1 non-NaN rating per bridge; `f = 2.0*z(9-min_2018) + 1.0*z(age) + 0.5*z(log1p(adt))`; `latent = BASE_RATE_LOGIT + signal*f + noise*N(0,1)`; noise=0 requires signal>0 (else ValueError) and worse = top round(TARGET_RATE*n) by latent with TARGET_RATE = 0.15; worse: min_2022 = min_2018 − drop, drop ∈ 1..min(3, min_2018); non-worse: min_2022 ≥ min_2018
+  - `make_fake` per Algorithm 9 (R13): returns `(df_2018, df_2022, truth)`; min_2018 ≥ 1 and ≥ 1 non-NaN rating per bridge; `f = 2.0*z(9-min_2018) + 1.0*z(age) + 0.5*z(log1p(adt))`; `latent = BASE_RATE_LOGIT + signal*f + noise*N(0,1)`; noise=0 requires signal>0 (else ValueError) and worse = top round(TARGET_RATE*n) by latent with TARGET_RATE = 0.15; evolution per safety-drop label: worse start≥5 → end in 0..4, worse start≤4 → fall 1..min(3, start); non-worse never safety drops (start≤4 → end≥start; start≥5 → end≥5, so a 5 never lands on 4)
   - Calibrate BASE_RATE_LOGIT by simulation (realized pool rate in [0.12, 0.22] at signal=0, noise=1); store as constant
   - _Requirements: R13_
   - Demo: `python -c "from planner.backtest import make_fake, TARGET_RATE; d18,d22,t=make_fake(2000,1,1.0,0.0); import numpy as np; k=round(TARGET_RATE*2000); assert (t.latent.nlargest(k).index.isin(d18.structure_id)).all(); mins=np.nanmin(np.vstack([d18['deck'].fillna(9),d18['super'].fillna(9),d18['sub'].fillna(9)]),axis=0); assert (mins>=1).all(); print('noise=0 top-k deterministic, min_2018>=1 ok'); import traceback
@@ -26,9 +26,9 @@ try: make_fake(100,2,0.0,0.0); assert False
 except ValueError: print('signal=0,noise=0 rejected')"`
 
 - [ ] 3. Implement exclusion and labeling pass
-  - `apply_exclusion_and_label` per Algorithm 2 (R1.4, R2, R3, R4.4): skip rebuilt / missing in 2022 / NaN min either side / year_built NaN or <=0 / adt NaN / duplicate structure_id (all rows of a duplicated id excluded, count reported); `worse = min_2022 <= min_2018 - 1`; candidates DataFrame indexed by structure_id with columns county, inspect_cost, adt, year_built, min_2018; pool_cost_info with total_cost_pool (POOL only) and per-reason exclusion_counts
+  - `apply_exclusion_and_label` per Algorithm 2 (R1.4, R2, R3, R4.4): skip rebuilt / missing in 2022 / NaN min either side / year_built NaN or <=0 / adt NaN / duplicate structure_id (all rows of a duplicated id excluded, count reported); `worse = is_safety_drop(min_2018, min_2022) = (min_2022 < min_2018) and (min_2022 <= 4)` (defined locally in backtest.py, not imported from model); candidates DataFrame indexed by structure_id with columns county, inspect_cost, adt, year_built, min_2018; pool_cost_info with total_cost_pool (POOL only) and per-reason exclusion_counts
   - _Requirements: R2, R3, R4.4_
-  - Demo: `python -c "import pandas as pd; from planner.backtest import *; a=pd.DataFrame({'structure_id':['a','b','c','d','e'],'county':['x','x','y','y','y'],'year_built':[1950,1950,1950,1950,None],'adt':[10.0,10.0,10.0,10.0,10.0],'deck':[5]*5,'super':[5]*5,'sub':[5]*5,'inspect_cost':[1.0]*5}); b=pd.DataFrame({'structure_id':['a','b','c','e'],'deck':[4,5,5,5],'super':[5,5,5,5],'sub':[5,5,5,5],'rebuilt':[0,1,0,0]}); c,o,p=apply_exclusion_and_label(*load_and_validate(a,b),5.0); assert set(c.index)=={'a','c','e'} and o['a']['worse'] and not o['c']['worse'] and p['total_cost_pool']==3+2*5 and p['exclusion_counts']['rebuilt']==1 and p['exclusion_counts']['missing_2022']==1; print('pool a,c,e; a worse; pool cost 13; reasons counted')"`
+  - Demo: `python -c "import pandas as pd; from planner.backtest import *; a=pd.DataFrame({'structure_id':['a','b','c','d','e','f'],'county':['x','x','y','y','y','y'],'year_built':[1950,1950,1950,1950,None,1950],'adt':[10.0]*6,'deck':[5,5,5,5,5,7],'super':[5,5,5,5,5,7],'sub':[5,5,5,5,5,7],'inspect_cost':[1.0]*6}); b=pd.DataFrame({'structure_id':['a','b','c','e','f'],'deck':[4,5,5,5,5],'super':[5,5,5,5,5],'sub':[5,5,5,5,5],'rebuilt':[0,1,0,0,0]}); c,o,p=apply_exclusion_and_label(*load_and_validate(a,b),5.0); assert set(c.index)=={'a','c','f'} and o['a']['worse'] and not o['c']['worse'] and not o['f']['worse'] and p['total_cost_pool']==3+2*5 and p['exclusion_counts']['rebuilt']==1 and p['exclusion_counts']['missing_2022']==1; print('a worse (5->4 safety drop); f NOT worse (7->5 stays above 4); pool cost 13')"`
 
 - [ ] 4. Implement cost rule (marginal_cost + cost_accounting)
   - `marginal_cost(county, inspect_cost, counties_seen, county_fee)` and `cost_accounting(selected_ids, candidates, county_fee)` per Algorithm 3 (R4): fee once per county, selection order; the ONLY cost logic in the codebase
@@ -50,7 +50,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
 - [ ] 7. Implement evaluation metrics
   - `evaluate_metrics(selected_ids, outcomes, adt_dict)` per Algorithm 6 (R10): TP/FP, weighted TP/FP via log1p(adt), headline recall and weighted_recall
   - _Requirements: R10_
-  - Demo: `python -c "from planner.backtest import evaluate_metrics; o={'a':{'worse':True,'min_2018':5,'min_2022':4},'b':{'worse':False,'min_2018':5,'min_2022':5},'c':{'worse':True,'min_2018':6,'min_2022':4}}; m=evaluate_metrics(['a','b'],o,{'a':10.0,'b':10.0,'c':10.0}); assert m.tp==1 and m.fp==1 and abs(m.recall-0.5)<1e-12 and abs(m.weighted_recall-0.5)<1e-12; print('recall 0.5, weighted recall 0.5')"`
+  - Demo: `python -c "from planner.backtest import evaluate_metrics, is_safety_drop; o={'a':{'worse':True,'min_2018':5,'min_2022':4},'b':{'worse':False,'min_2018':5,'min_2022':5},'c':{'worse':True,'min_2018':6,'min_2022':4},'d':{'worse':False,'min_2018':7,'min_2022':5}}; assert is_safety_drop(5,4) and not is_safety_drop(7,5); m=evaluate_metrics(['a','b'],o,{'a':10.0,'b':10.0,'c':10.0,'d':10.0}); assert m.tp==1 and m.fp==1 and abs(m.recall-0.5)<1e-12 and abs(m.weighted_recall-0.5)<1e-12; print('a worse (5->4), d not (7->5); recall 0.5, weighted recall 0.5')"`
 
 - [ ] 8. Implement run_backtest orchestrator
   - `run_backtest` with the canonical signature (R11.1) per Algorithm 7: shared pool; per `tiebreaks` entry — "adt" runs deterministic baselines once, "random" runs them over RANDOM_SEEDS_TEST and reports the MEAN as ONE row with tiebreak="random"; default call yields exactly one worst_first row per budget; random_avg 200 production seeds; oracle; model via pick(..., rank_by_value_per_cost=True) when model_scores given
@@ -78,7 +78,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - Demo: `python -m pytest planner/properties.py::test_no_duplicates -q`
 
 - [ ] 13. Property: deterioration monotonicity
-  - `test_deterioration_monotonicity()` (no arguments) per R14.3: (a) exhaustive min step over all 11³ (deck, super, sub) triples (0–9 + NaN) vs a reference implementation; (b) worse/exclusion comparison over all 11×11 (min_2018, min_2022) combos incl. NaN; (c) 20,000 random triple pairs vectorized through `apply_exclusion_and_label` vs the reference
+  - `test_deterioration_monotonicity()` (no arguments) per R14.3: (a) exhaustive min step over all 11³ (deck, super, sub) triples (0–9 + NaN) vs a reference implementation; (b) safety-drop/exclusion comparison over all 11×11 (min_2018, min_2022) combos incl. NaN against `is_safety_drop = (end < start) and (end <= 4)`; (c) 20,000 random triple pairs vectorized through `apply_exclusion_and_label` vs the reference
   - _Requirements: R14.3_
   - Demo: `python -m pytest planner/properties.py::test_deterioration_monotonicity -q`
 
@@ -103,16 +103,21 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - Demo: `python -m pytest planner/properties.py::test_sanity_signal_zero_near_random -q`
 
 - [ ] 18. Property: base-rate calibration
-  - `test_base_rate_calibration()`: over 20 make_fake seeds (signal=0, noise=1), mean(worse) over the pool returned by apply_exclusion_and_label ∈ [0.12, 0.22]
+  - `test_base_rate_calibration()`: over 20 make_fake seeds (signal=0, noise=1), mean(worse) (safety-drop label) over the pool returned by apply_exclusion_and_label ∈ [0.12, 0.22]
   - _Requirements: R14.8_
   - Demo: `python -m pytest planner/properties.py::test_base_rate_calibration -q`
 
 - [ ] 19. Property: generator consistency
-  - `test_generator_consistency()`: for every pool bridge, pipeline-computed worse (apply_exclusion_and_label) equals the generator's drawn worse, across seeds and (signal, noise) settings
+  - `test_generator_consistency()`: for every pool bridge, pipeline-computed worse (apply_exclusion_and_label via is_safety_drop) equals the generator's drawn worse, across seeds and (signal, noise) settings
   - _Requirements: R14.9_
   - Demo: `python -m pytest planner/properties.py::test_generator_consistency -q`
 
-- [ ] 20. Refactor fetch_years.py — required
+- [ ] 20. Property: safety-drop parity with model
+  - `test_is_safety_drop_parity()`: compare local `is_safety_drop` with `model.is_safety_drop` over all 11×11 inputs (0–9 plus NaN for start and end); SKIPPED if `model` is not importable (pytest.importorskip or skipif)
+  - _Requirements: R14.10_
+  - Demo: `python -m pytest planner/properties.py::test_is_safety_drop_parity -q` (reports SKIPPED until model exists)
+
+- [ ] 21. Refactor fetch_years.py — required
   - Download to a temp filename and rename on success (no partial files in data/)
   - Wrap logic in functions with an `if __name__ == "__main__":` guard
   - Resolve data/ relative to the script's own folder (works from any cwd)
@@ -120,7 +125,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: supports Algorithm 10 inputs_
   - Demo: `python fetch_years.py && test -s data/overlap.txt && head -3 data/overlap.txt`
 
-- [ ] 21. Build NBI adapter (adapt_nbi) — required
+- [ ] 22. Build NBI adapter (adapt_nbi) — required
   - Run refactored `fetch_years.py` to obtain MA18.txt / MA22.txt (or confirm present in data/); implement `adapt_nbi(path_2018, path_2022, flat_inspect_cost, county_fee)` per Algorithm 10
   - Select columns BY NAME ONLY; cleaning order: strip whitespace → ""/"N"→NaN → numeric; county codes stripped and zero-padded to 3 digits in both years; structure_id stripped both years
   - Print BOTH unmatched counts (2018-absent-from-2022 and 2022-absent-from-2018); if LOWEST_RATING exists in 2022, print rows differing from computed min
@@ -128,7 +133,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R1, R2, Assumptions 2, 8_
   - Demo: `python -c "from planner.backtest import adapt_nbi; d18,d22=adapt_nbi('data/MA18.txt','data/MA22.txt',1.0,5.0); print(len(d18),'bridges adapted; rebuilt/unmatched counts printed above')"`
 
-- [ ] 22. Run baselines on real data — required
+- [ ] 23. Run baselines on real data — required
   - Run worst_first, oldest_first, random_avg, oracle on adapted data, ALL budgets, `tiebreaks=("adt", "random")` so the ADT tie-break effect is visible; report both (the "random" leg is one mean row per baseline)
   - Print: pool size, count of worse bridges, recall and weighted recall per method per budget, filling blank tiebreak with "adt" before printing; note that flat inspect_cost = 1 makes value-per-cost ranking equal raw-score ranking (placeholder units); save plots
   - _Requirements: R10, R11, R12_
@@ -145,8 +150,8 @@ except ValueError: print('random tiebreak without rng rejected')"`
  │              ├─→ 6 (scoring) ─→ 7 (metrics) ─→ 8 (run_backtest) ─→ 9 (plot) ─→ 10 (bootstrap_gap_ci)
  │              └────────────────── 2,3,4 feed 5 ─┘
  │
-11–19 (properties) depend on 1–8 (14 uses 21 output for its real-data leg; must pass on fake alone)
-20 (fetch_years refactor) is independent; produces raw inputs for 21
-21 (adapter) depends on 1 and 20
-22 (real-data run) depends on 21, 8, 9, 10; independent of 11–19
+11–20 (properties) depend on 1–8 (14 uses 22 output for its real-data leg; must pass on fake alone; 20 skips until model exists)
+21 (fetch_years refactor) is independent; produces raw inputs for 22
+22 (adapter) depends on 1 and 21
+23 (real-data run) depends on 22, 8, 9, 10; independent of 11–20
 ```

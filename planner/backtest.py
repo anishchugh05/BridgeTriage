@@ -9,6 +9,8 @@ Conventions (per requirements.md):
 - Higher score = picked first, for ALL scoring functions.
 - Ratings are integers 0-9; NaN means "not applicable" ("N" in source).
 - Budgets are fractions of the candidate pool's total inspection cost.
+- Labels: worse = is_safety_drop(min_2018, min_2022), defined locally
+  below (never imported from model).
 """
 
 import matplotlib
@@ -32,7 +34,9 @@ TARGET_RATE = 0.15        # target decline rate for noise=0 generation
 # matches the pre-exclusion generated rate this value was calibrated against.
 # -2.0 yields a generated decline rate of ~0.156 (E[logistic(B + Z)], Z~N(0,1),
 # confirmed by simulation over 20 seeds at n=5000), inside the required
-# [0.12, 0.22] band (see calibration note in make_fake's docstring).
+# [0.12, 0.22] band. Under the safety-drop label the pipeline-computed label
+# equals the drawn label by construction (R14.9), so the pool rate equals the
+# generated rate up to label-independent exclusions (see make_fake docstring).
 BASE_RATE_LOGIT = -2.0
 REL_TOL = 1e-9            # relative tolerance for budget comparisons
 BOOTSTRAP_REPS = 1000
@@ -144,6 +148,22 @@ def _z(x):
     return (x - x.mean()) / sd if sd > 0 else np.zeros_like(x)
 
 
+# ---------------------------------------------------------------------------
+# Label (R3): safety drop — defined locally, never imported from model
+# ---------------------------------------------------------------------------
+
+def is_safety_drop(start, end):
+    """Safety-drop label (R3): (end < start) and (end <= 4) on integer mins.
+
+    NaN on either side yields False (such bridges are excluded from the
+    pool, R2). Defined locally so the harness stands alone; do NOT import
+    this from model. Accepts scalars or numpy arrays; returns bool(s).
+    """
+    start = np.asarray(start, dtype=float)
+    end = np.asarray(end, dtype=float)
+    return (end < start) & (end <= 4)
+
+
 def make_fake(n, seed, signal, noise):
     """Generate a synthetic (df_2018, df_2022, truth) triple (Algorithm 9, R13).
 
@@ -161,10 +181,14 @@ def make_fake(n, seed, signal, noise):
     round(TARGET_RATE * n) bridges by latent — deterministic, ~15% (R13.4).
     noise > 0: worse ~ bernoulli(p_decline) (R13.5).
 
-    Rating evolution (R13.6): worse bridges drop by 1..min(3, min_2018) so
-    min_2022 = min_2018 - drop >= 0; non-worse bridges satisfy
-    min_2022 >= min_2018. 2022 rating columns are regenerated consistent
-    with the new min (one column anchored exactly at min_2022).
+    Rating evolution (R13.6, consistent with the safety-drop label by
+    construction): worse bridges with min_2018 >= 5 get min_2022 uniform
+    in 0..4; worse bridges with min_2018 <= 4 fall by drop in
+    1..min(3, min_2018). Non-worse bridges are NEVER safety drops:
+    min_2018 <= 4 -> min_2022 >= min_2018; min_2018 >= 5 -> min_2022 >= 5
+    (a bridge at 5 can never be labeled non-worse by landing on 4).
+    2022 rating columns are regenerated consistent with the new min
+    (one column anchored exactly at min_2022).
 
     Plausible distributions (R13.8): integer ratings 0-9 skewed toward 5-8
     with ~15% NaN per column, lognormal adt and inspect_cost (positive),
@@ -219,14 +243,20 @@ def make_fake(n, seed, signal, noise):
     else:
         worse = rng.random(n) < p_decline
 
-    # Rating evolution (R13.6).
-    drop_cap = np.minimum(3, min18).astype(int)
+    # Rating evolution (R13.6) under the safety-drop label: the drawn
+    # labels are made exactly consistent with is_safety_drop, so the
+    # pipeline label equals the generator's drawn label (R14.9).
+    start = min18.astype(int)                                  # >= 1 (R13.2)
+    hi = start >= 5
+    drop_cap = np.minimum(3, start)
     drop = 1 + np.floor(rng.random(n) * drop_cap)              # uniform 1..cap
-    min22 = np.where(
-        worse,
-        min18 - drop,                                          # >= 0 always
-        np.minimum(9.0, min18 + np.floor(rng.random(n) * 2)),  # min18 or +1
+    end_worse = np.where(hi, rng.integers(0, 5, n), start - drop)
+    end_ok = np.where(
+        hi,
+        rng.integers(5, 10, n),                                # 5..9: may fall, never <= 4
+        start + np.floor(rng.random(n) * (10 - start)),        # start..9: never falls
     )
+    min22 = np.where(worse, end_worse, end_ok).astype(float)
 
     # Regenerate 2022 ratings consistent with the new min: every column is
     # >= min_2022 and one anchored column equals min_2022 exactly.

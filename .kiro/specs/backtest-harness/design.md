@@ -65,7 +65,7 @@ Filter uses 2022 info; identical for all methods (documented in any report).
 For each 2018 row:
   skip + count reason: missing in 2022 | rebuilt | min_2018 NaN |
   min_2022 NaN | year_built NaN or <= 0 or adt NaN ('missing_yearbuilt_adt')
-  worse = (min_2022 <= min_2018 - 1)
+  worse = is_safety_drop(min_2018, min_2022)   # (end < start) and (end <= 4)
 Build candidates (indexed by structure_id; cols county, inspect_cost, adt,
 year_built, min_2018), outcomes dict, and
 pool_cost_info = {'total_cost_pool': sum(inspect_cost) + n_unique_counties*county_fee,
@@ -73,6 +73,15 @@ pool_cost_info = {'total_cost_pool': sum(inspect_cost) + n_unique_counties*count
                   'exclusion_counts': {...}}     # POOL ONLY, never all bridges
 Bridges replaced under a new ID fall out as 'missing in 2022' (R2.4).
 ```
+
+### Label: is_safety_drop (defined locally, never imported from model)
+```
+def is_safety_drop(start, end):
+    # (end < start) and (end <= 4) on integer mins; NaN -> False
+    # i.e. (min_2022 < min_2018) and (min_2022 <= 4) at the bridge level
+    # vectorized over numpy arrays; used by Algorithm 2 and the parity test
+```
+A decline that stays at 5 or above (e.g., 7→5) is NOT worse.
 
 ### Algorithm 3: Cost — one rule, two functions
 ```
@@ -182,17 +191,21 @@ if noise == 0:
     worse = top-k bridges by latent             # deterministic, exactly ~15%
 else:
     worse ~ bernoulli(p_decline)
-Rating evolution:
-  worse:     drop ∈ 1..min(3, min_2018); min_2022 = min_2018 - drop   (>= 0)
-  non-worse: min_2022 >= min_2018
+Rating evolution (consistent with is_safety_drop by construction):
+  worse,     start >= 5: end uniform in 0..4
+  worse,     start <= 4: end = start - drop, drop ∈ 1..min(3, start)
+  non-worse, start <= 4: end uniform in start..9   (never declines)
+  non-worse, start >= 5: end uniform in 5..9       (may fall, never <= 4;
+                                                    a 5 can never land on 4)
   regenerate 2022 rating columns consistent with the new min
 Sprinkle rebuilt flags + remove rows from df_2022 (exercises exclusions).
 Return (df_2018, df_2022, truth[structure_id -> latent, p_decline])
 ```
 BASE_RATE_LOGIT calibration: simulate signal=0, noise=1 over a seed sweep;
 choose the constant so the realized pool decline rate (mean of worse over the
-pool from Algorithm 2) lands in [0.12, 0.22]; store as module constant.
-Verified by R14.8.
+pool from Algorithm 2, safety-drop label) lands in [0.12, 0.22]; store as
+module constant. Measurable because the pipeline label equals the drawn label
+by construction (R14.9). Verified by R14.8.
 
 ### Algorithm 10: adapt_nbi(path_2018, path_2022, flat_inspect_cost, county_fee)
 ```
@@ -229,15 +242,16 @@ missing and are excluded like any missing bridge (requirements R2.4).
 `planner/__init__.py` — package marker.
 
 `planner/backtest.py`: load_and_validate, apply_exclusion_and_label,
-marginal_cost, cost_accounting, pick, score_worst_first, score_oldest_first,
-score_random, score_oracle, evaluate_metrics, make_fake, run_backtest,
-bootstrap_gap_ci, plot, adapt_nbi.
+is_safety_drop, marginal_cost, cost_accounting, pick, score_worst_first,
+score_oldest_first, score_random, score_oracle, evaluate_metrics, make_fake,
+run_backtest, bootstrap_gap_ci, plot, adapt_nbi.
 
 `planner/properties.py` (all test functions take NO arguments):
 test_budget_compliance, test_no_duplicates, test_deterioration_monotonicity,
 test_oracle_upper_bound, test_exclusion_consistency,
 test_sanity_noise_zero_near_oracle, test_sanity_signal_zero_near_random,
-test_base_rate_calibration, test_generator_consistency.
+test_base_rate_calibration, test_generator_consistency,
+test_is_safety_drop_parity (skipped if model not importable).
 
 ## Module Constants
 
@@ -268,13 +282,14 @@ test_base_rate_calibration, test_generator_consistency.
 
 1. Budget compliance: cost ≤ available·(1+1e-9), 100 fake datasets.
 2. No duplicates in any selection.
-3. Deterioration monotonicity: 11³ triples vs reference; 11×11 (min18, min22) combos incl. NaN; 20,000 random triple pairs vectorized through apply_exclusion_and_label.
+3. Deterioration monotonicity: 11³ triples vs reference; 11×11 (min18, min22) combos incl. NaN against is_safety_drop = (end < start) and (end <= 4); 20,000 random triple pairs vectorized through apply_exclusion_and_label.
 4. Oracle soft aggregate: mean over 50 seeds, oracle weighted recall ≥ each method's mean − 0.01 per budget; per-seed violations reported as a table, no single-seed failure.
 5. Exclusion consistency (all R2 reasons).
 6. Sanity noise=0 "ceiling (uses truth)": run once, record realized model/oracle ratio per budget, report, set bar from realized ratios.
 7. Sanity signal=0 (oracle excluded, baselines tiebreak="random"): Leg B only — |mean(d)| ≤ BAND_K·std(d)/√20 over 20 seeds, for BOTH unweighted and weighted recall.
-8. Base-rate calibration: mean(worse) over pool ∈ [0.12, 0.22], 20 seeds, signal=0, noise=1.
-9. Generator consistency: pipeline-computed worse == generator's drawn worse for every pool bridge.
+8. Base-rate calibration: mean(worse) over pool ∈ [0.12, 0.22], 20 seeds, signal=0, noise=1 (safety-drop label).
+9. Generator consistency: pipeline-computed worse (is_safety_drop) == generator's drawn worse for every pool bridge.
+10. Safety-drop parity: local is_safety_drop == model.is_safety_drop over all 11×11 inputs (0–9 + NaN); skipped if model not importable.
 
 ---
 **End of Design**

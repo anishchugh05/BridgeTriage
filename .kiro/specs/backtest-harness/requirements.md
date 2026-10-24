@@ -10,7 +10,7 @@ A backtest harness to evaluate bridge inspection prioritization strategies. Give
 
 **Bridge Rating** — Integer condition score 0–9; NaN indicates "not applicable" (recorded as "N" in source data).
 
-**Worse** — `min_2022 <= min_2018 - 1`, where each min ignores NaN. Ratings are integers, so this equals `min_2022 < min_2018`. If either min is NaN, the bridge is EXCLUDED from the pool.
+**Worse** — `worse = is_safety_drop(min_2018, min_2022) = (min_2022 < min_2018) and (min_2022 <= 4)` on integer mins (each min ignores NaN). If either min is NaN, the bridge is EXCLUDED from the pool. A decline that stays at 5 or above (e.g., 7→5) is NOT worse. `is_safety_drop` is defined locally in planner/backtest.py; it is NOT imported from model.
 
 **Candidate Pool** — Bridges remaining after all exclusions. The filter uses 2022 information (rebuilt, missing, NaN ratings) and is applied identically to every method, so no method gains an advantage.
 
@@ -61,9 +61,11 @@ A backtest harness to evaluate bridge inspection prioritization strategies. Give
 
 1. `min_2018 = min(deck_2018, super_2018, sub_2018)` ignoring NaN; same for 2022.
 
-2. `worse = (min_2022 <= min_2018 - 1)`.
+2. `worse = is_safety_drop(min_2018, min_2022) = (min_2022 < min_2018) and (min_2022 <= 4)`. A decline that stays at 5 or above (e.g., 7→5) is NOT worse.
 
 3. NaN min on either side → excluded per R2, never labeled.
+
+4. `is_safety_drop` is defined locally in planner/backtest.py; it is NOT imported from model.
 
 ### R4: Cost Accounting — one cost rule
 
@@ -198,7 +200,7 @@ A backtest harness to evaluate bridge inspection prioritization strategies. Give
 
 5. `noise > 0`: `worse ~ bernoulli(p_decline)`.
 
-6. Rating evolution: for worse bridges, `min_2022 = min_2018 - drop` with `drop ∈ 1..min(3, min_2018)` (so min_2022 ≥ 0 always); for non-worse bridges, `min_2022 >= min_2018`. 2022 rating columns are regenerated consistent with the new min.
+6. Rating evolution (consistent with the safety-drop label by construction): worse bridges with `min_2018 >= 5` get `min_2022` uniform in 0..4; worse bridges with `min_2018 <= 4` fall by `drop ∈ 1..min(3, min_2018)`. Non-worse bridges are NEVER safety drops: `min_2018 <= 4` → `min_2022 >= min_2018`; `min_2018 >= 5` → `min_2022 >= 5` (a bridge at 5 can never be labeled non-worse by landing on 4). 2022 rating columns are regenerated consistent with the new min.
 
 7. `BASE_RATE_LOGIT` is calibrated by simulation so that `signal=0, noise=1` yields a realized decline rate within [0.12, 0.22] (R14.8). Stored as a module constant.
 
@@ -214,7 +216,7 @@ Property tests use `RANDOM_SEEDS_TEST = range(20)` for random_avg (not the 200 p
 
 2. **No Duplicate Selections** — `len(selected) == len(set(selected))` for every method and budget.
 
-3. **Deterioration Monotonicity** — (a) exhaustively check the min step over all 11³ (deck, super, sub) triples (0–9 plus NaN) vs a reference implementation; (b) check the worse/exclusion comparison over all 11×11 (min_2018, min_2022) combos including NaN; (c) run 20,000 random triple pairs vectorized through `apply_exclusion_and_label` and compare against the reference. Assert `worse` iff `min_2022 <= min_2018 - 1`; NaN min either side → absent from pool.
+3. **Deterioration Monotonicity** — (a) exhaustively check the min step over all 11³ (deck, super, sub) triples (0–9 plus NaN) vs a reference implementation; (b) check the safety-drop/exclusion comparison over all 11×11 (min_2018, min_2022) combos including NaN against `is_safety_drop = (end < start) and (end <= 4)`; (c) run 20,000 random triple pairs vectorized through `apply_exclusion_and_label` and compare against the reference. Assert `worse` iff `(min_2022 < min_2018) and (min_2022 <= 4)`; NaN min either side → absent from pool.
 
 4. **Oracle Upper Bound (soft aggregate, weighted only)** — over 50 make_fake seeds: `mean(oracle weighted recall) >= mean(each other method's weighted recall) - 0.01` at each budget. Per-seed violations are reported as a table; a single-seed violation does NOT fail the test. Also run on real data when available. Unweighted dominance is not claimed or tested.
 
@@ -224,9 +226,11 @@ Property tests use `RANDOM_SEEDS_TEST = range(20)` for random_avg (not the 200 p
 
 7. **Sanity — signal=0 near random** — oracle excluded; baselines run with `tiebreak="random"`. Leg B is the gate: for each of 20 make_fake seeds (signal=0, noise=1), compute `d = method recall − that dataset's random_avg mean` (random_avg over the 20 test seeds); assert `|mean(d)| <= BAND_K * std(d) / sqrt(20)` — computed for BOTH unweighted recall AND weighted recall. BAND_K = 3, the same constant used in R12.1a.
 
-8. **Base-Rate Calibration** — over 20 make_fake seeds with `signal=0, noise=1`, the realized decline rate = `mean(worse)` over the pool returned by `apply_exclusion_and_label` is within [0.12, 0.22].
+8. **Base-Rate Calibration** — over 20 make_fake seeds with `signal=0, noise=1`, the realized decline rate = `mean(worse)` (safety-drop label) over the pool returned by `apply_exclusion_and_label` is within [0.12, 0.22]. This is measurable because the pipeline label equals the drawn label by construction (R14.9).
 
-9. **Generator Consistency** — for every bridge in the pool, the worse label computed by the pipeline (`apply_exclusion_and_label`) equals the generator's drawn worse (from `truth`/generator internals), across seeds and (signal, noise) settings.
+9. **Generator Consistency** — for every bridge in the pool, the worse label computed by the pipeline (`apply_exclusion_and_label` via `is_safety_drop`) equals the generator's drawn worse (from `truth`/generator internals), across seeds and (signal, noise) settings.
+
+10. **Safety-Drop Parity** — compare the local `is_safety_drop` with `model.is_safety_drop` over all 11×11 inputs (0–9 plus NaN for start and end); the test is SKIPPED if `model` is not importable.
 
 ## Assumptions
 
