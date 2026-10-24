@@ -663,3 +663,180 @@ def make_fake(n, seed, signal, noise):
         index=pd.Index(structure_ids, name="structure_id"),
     )
     return df_2018, df_2022, truth
+
+# ---------------------------------------------------------------------------
+# Algorithm 7: run_backtest (R11)
+# ---------------------------------------------------------------------------
+
+RESULT_COLUMNS = (
+    "method", "budget", "seed", "tiebreak", "tp", "fp", "weighted_tp",
+    "weighted_fp", "recall", "weighted_recall", "count_selected",
+    "cost_total", "is_aggregate", "stat",
+)
+
+
+def run_backtest(df_2018, df_2022, county_fee,
+                 budgets=[0.01, 0.02, 0.05, 0.10, 0.20],
+                 model_scores=None, tiebreaks=("adt",)):
+    """Run every selection method over every budget on ONE shared pool (R11).
+
+    Canonical signature (R11.1). The candidate pool is built ONCE via
+    load_and_validate + apply_exclusion_and_label and shared by all methods
+    (R11.2), so no method gains an advantage from the filter (R2.2).
+
+    Methods per budget (R11.2):
+      worst_first / oldest_first — the deterministic baselines. For each
+        entry in `tiebreaks`: "adt" runs each baseline ONCE with
+        tiebreak="adt"; "random" instead runs each over RANDOM_SEEDS_TEST
+        (20 seeds) with tiebreak="random" and reports the MEAN of recall and
+        weighted_recall as ONE aggregate row with tiebreak="random",
+        is_aggregate=True, stat="mean" (R11.3). Other metric columns are NaN
+        on that row: like the random_avg aggregates (R8.3), only recall and
+        weighted_recall are aggregated. The default call tiebreaks=("adt",)
+        therefore yields exactly ONE worst_first row per budget (and one per
+        other deterministic method) (R11.3). Unknown tiebreak entries raise
+        ValueError.
+      random_avg — one run per seed in RANDOM_SEEDS (200 production seeds,
+        R8.2); every per-seed row is kept (is_aggregate=False) and each
+        budget also gets four aggregate rows (is_aggregate=True,
+        stat in {"mean", "std", "min", "max"}) aggregating ONLY recall and
+        weighted_recall (R8.3, R11.4); std is the sample std (ddof=1).
+      oracle — one run per budget, ranked by value per cost (R9).
+      model — pick(model_scores, ..., rank_by_value_per_cost=True), one run
+        per budget, only when model_scores is given (R11.2); pick's
+        validation applies (finite, non-negative scores, R5.3).
+
+    Returns a DataFrame with columns RESULT_COLUMNS (design Data Model):
+    one row per (method, budget [, seed, tiebreak]) plus random_avg's
+    aggregate rows (R11.4). seed/tiebreak are NaN where not applicable
+    (deterministic single runs have seed NaN; random_avg, oracle, and model
+    rows have tiebreak NaN). cost_total is filled via cost_accounting, the
+    ONLY cost rule (R4.2); tp/fp/weighted_tp/weighted_fp/recall/
+    weighted_recall come from evaluate_metrics (R10) with weights from the
+    outcomes' adt (never from score, R10.3).
+    """
+    unknown = set(tiebreaks) - {"adt", "random"}
+    if unknown:
+        raise ValueError(
+            f"run_backtest: unknown tiebreak entries {sorted(unknown)}; "
+            'valid entries are "adt" and "random"'
+        )
+
+    df_2018, df_2022, index = load_and_validate(df_2018, df_2022)
+    candidates, outcomes, pool_cost_info = apply_exclusion_and_label(
+        df_2018, df_2022, index, county_fee
+    )
+    logger.info(
+        "run_backtest: pool=%d bridges (%d worse); exclusions=%s",
+        len(candidates),
+        sum(o["worse"] for o in outcomes.values()),
+        pool_cost_info["exclusion_counts"],
+    )
+    adt_dict = {sid: o["adt"] for sid, o in outcomes.items()}
+
+    # Budget-independent score dicts, computed once and shared by all budgets.
+    baseline_scores = {
+        "worst_first": score_worst_first(candidates),
+        "oldest_first": score_oldest_first(candidates),
+    }
+    oracle_scores = score_oracle(outcomes)
+    random_scores = {s: score_random(candidates, s) for s in RANDOM_SEEDS}
+
+    def _row(method, budget, selected, seed, tiebreak):
+        m = evaluate_metrics(selected, outcomes, adt_dict)
+        cost_total, _ = cost_accounting(selected, candidates, county_fee)
+        return {
+            "method": method, "budget": budget, "seed": seed,
+            "tiebreak": tiebreak, "tp": m.tp, "fp": m.fp,
+            "weighted_tp": m.weighted_tp, "weighted_fp": m.weighted_fp,
+            "recall": m.recall, "weighted_recall": m.weighted_recall,
+            "count_selected": m.count_selected, "cost_total": cost_total,
+            "is_aggregate": False, "stat": None,
+        }
+
+    def _aggregate_row(method, budget, tiebreak, stat, recalls, weighted_recalls):
+        # Only recall and weighted_recall are aggregated (R8.3); all other
+        # metric columns are NaN on aggregate rows.
+        rec = np.asarray(recalls, dtype=float)
+        wrec = np.asarray(weighted_recalls, dtype=float)
+        reduce = {
+            "mean": lambda x: float(np.mean(x)),
+            "std": lambda x: float(np.std(x, ddof=1)),
+            "min": lambda x: float(np.min(x)),
+            "max": lambda x: float(np.max(x)),
+        }[stat]
+        return {
+            "method": method, "budget": budget, "seed": None,
+            "tiebreak": tiebreak, "tp": None, "fp": None,
+            "weighted_tp": None, "weighted_fp": None,
+            "recall": reduce(rec), "weighted_recall": reduce(wrec),
+            "count_selected": None, "cost_total": None,
+            "is_aggregate": True, "stat": stat,
+        }
+
+    rows = []
+    for budget in budgets:
+        # Deterministic baselines, once per tiebreak entry (R11.3).
+        for tb in tiebreaks:
+            for method, scores in baseline_scores.items():
+                if tb == "adt":
+                    rows.append(_row(
+                        method, budget,
+                        pick(scores, budget, candidates, pool_cost_info,
+                             county_fee, tiebreak="adt"),
+                        None, "adt",
+                    ))
+                else:  # "random": 20 seeded runs, MEAN reported as ONE row.
+                    recalls, weighted_recalls = [], []
+                    for s in RANDOM_SEEDS_TEST:
+                        m = evaluate_metrics(
+                            pick(scores, budget, candidates, pool_cost_info,
+                                 county_fee, tiebreak="random",
+                                 rng=np.random.default_rng(s)),
+                            outcomes, adt_dict,
+                        )
+                        recalls.append(m.recall)
+                        weighted_recalls.append(m.weighted_recall)
+                    rows.append(_aggregate_row(
+                        method, budget, "random", "mean",
+                        recalls, weighted_recalls,
+                    ))
+
+        # random_avg: all per-seed rows kept, plus mean/std/min/max (R8.3).
+        per_seed_recalls, per_seed_weighted = [], []
+        for s in RANDOM_SEEDS:
+            row = _row(
+                "random_avg", budget,
+                pick(random_scores[s], budget, candidates, pool_cost_info,
+                     county_fee),
+                s, None,
+            )
+            rows.append(row)
+            per_seed_recalls.append(row["recall"])
+            per_seed_weighted.append(row["weighted_recall"])
+        for stat in ("mean", "std", "min", "max"):
+            rows.append(_aggregate_row(
+                "random_avg", budget, None, stat,
+                per_seed_recalls, per_seed_weighted,
+            ))
+
+        # Oracle: best achievable weighted recall per dollar (R9).
+        rows.append(_row(
+            "oracle", budget,
+            pick(oracle_scores, budget, candidates, pool_cost_info,
+                 county_fee, rank_by_value_per_cost=True, tiebreak="adt"),
+            None, None,
+        ))
+
+        # Model scores, ranked by value per cost, only when given (R11.2).
+        if model_scores is not None:
+            rows.append(_row(
+                "model", budget,
+                pick(model_scores, budget, candidates, pool_cost_info,
+                     county_fee, rank_by_value_per_cost=True, tiebreak="adt"),
+                None, None,
+            ))
+
+    result = pd.DataFrame(rows, columns=list(RESULT_COLUMNS))
+    result["is_aggregate"] = result["is_aggregate"].astype(bool)
+    return result

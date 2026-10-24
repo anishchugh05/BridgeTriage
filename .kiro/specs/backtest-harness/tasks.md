@@ -52,7 +52,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R10_
   - Demo: `python -c "from planner.backtest import evaluate_metrics, is_safety_drop; o={'a':{'worse':True,'min_2018':5,'min_2022':4},'b':{'worse':False,'min_2018':5,'min_2022':5},'c':{'worse':True,'min_2018':6,'min_2022':4},'d':{'worse':False,'min_2018':7,'min_2022':5}}; assert is_safety_drop(5,4) and not is_safety_drop(7,5); m=evaluate_metrics(['a','b'],o,{'a':10.0,'b':10.0,'c':10.0,'d':10.0}); assert m.tp==1 and m.fp==1 and abs(m.recall-0.5)<1e-12 and abs(m.weighted_recall-0.5)<1e-12; print('a worse (5->4), d not (7->5); recall 0.5, weighted recall 0.5')"`
 
-- [ ] 8. Implement run_backtest orchestrator
+- [x] 8. Implement run_backtest orchestrator
   - `run_backtest` with the canonical signature (R11.1) per Algorithm 7: shared pool; per `tiebreaks` entry — "adt" runs deterministic baselines once, "random" runs them over RANDOM_SEEDS_TEST and reports the MEAN as ONE row with tiebreak="random"; default call yields exactly one worst_first row per budget; random_avg 200 production seeds; oracle; model via pick(..., rank_by_value_per_cost=True) when model_scores given
   - _Requirements: R11_
   - Demo: `python -c "from planner.backtest import *; d18,d22,t=make_fake(400,2,0.5,0.5); r=run_backtest(d18,d22,5.0); w=r[(r.method=='worst_first')&(r.budget==0.05)&(~r.is_aggregate)]; assert len(w)==1 and 0.0<=w.recall.iloc[0]<=1.0; print(r[~r.is_aggregate].groupby('method').recall.mean().round(3))"`
