@@ -1,18 +1,20 @@
 """Validation harness for the decline model (Part B).
 
-Splits bridges 80/20 (fixed seed), fits on the training bridges over the
-2012 -> 2016 interval, and evaluates on the held-out 20% over that same 4-year
-interval. The prediction target is the shared safety drop (see
-:mod:`model.target`). Reports positives, log loss, and AUC for three models:
+5-fold cross-validation **grouped by bridge id** (a bridge is never split across
+train and test) over the 2012 -> 2016 interval. The target is the shared safety
+drop (see :mod:`model.target`). For each fold we fit on 4/5 of bridges and score
+the held-out 1/5, for four models:
 
-    - grouped   : fit_decline (material x age band x condition, shrunk)
-    - logistic  : fit_logistic (condition/material one-hot + age, log ADT, ...)
-    - baseline  : per-condition drop rate only
+    - grouped          : fit_decline (material x age band x condition, shrunk)
+    - logistic (no msi): fit_logistic WITHOUT months_since_insp
+    - logistic (+ msi) : fit_logistic WITH months_since_insp
+    - baseline         : per-condition drop rate only
 
-and prints the new drop rate by starting condition.
+and report mean +/- std of AUC and log loss across folds.
 
-``select_model`` returns whichever of grouped/logistic has the better test AUC,
-which is what score() should use.
+``select_model`` picks by mean CV AUC, preferring the simpler model unless a
+more complex one wins by more than one standard deviation. Complexity order:
+baseline < grouped < logistic(no msi) < logistic(+ msi).
 
 Run:
     .venv/bin/python -m model.validate
@@ -27,8 +29,11 @@ from .data import load_panel
 from .score import _build_pairs, fit_decline, fit_logistic
 
 FIT_START, FIT_END = 2012, 2016
-TEST_SEED = 1234
-TEST_FRACTION = 0.20
+CV_SEED = 1234
+N_FOLDS = 5
+
+# Model keys in increasing complexity order (used for the tie-break rule).
+MODEL_ORDER = ["baseline", "grouped", "logistic_no_msi", "logistic_msi"]
 
 
 def _log_loss(y_true: np.ndarray, p: np.ndarray) -> float:
@@ -61,106 +66,132 @@ def _auc(y_true: np.ndarray, scores: np.ndarray) -> float:
     return float((sum_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
 
 
-def _split_bridges(panel: pd.DataFrame, seed: int, test_fraction: float):
-    ids = np.sort(panel["id"].unique())
-    rng = np.random.default_rng(seed)
-    shuffled = rng.permutation(ids)
-    n_test = int(round(len(shuffled) * test_fraction))
-    return set(shuffled[n_test:]), set(shuffled[:n_test])
-
-
 def _grouped_probs(rates, eval_df: pd.DataFrame) -> np.ndarray:
     return np.array(
-        [
-            rates.prob_for(r.material, r.age_band, r.cond)
-            for r in eval_df.itertuples()
-        ]
+        [rates.prob_for(r.material, r.age_band, r.cond)
+         for r in eval_df.itertuples()]
     )
 
 
-def _baseline(train_eval: pd.DataFrame) -> dict:
+def _baseline_probs(train_eval: pd.DataFrame, test_eval: pd.DataFrame) -> np.ndarray:
     per = train_eval.groupby("cond")["dropped"].mean().to_dict()
-    return {"per_cond": per, "overall": float(train_eval["dropped"].mean())}
+    overall = float(train_eval["dropped"].mean())
+    return np.array([per.get(int(c), overall) for c in test_eval["cond"]])
 
 
-def run(panel: pd.DataFrame, seed: int = TEST_SEED,
-        test_fraction: float = TEST_FRACTION) -> dict:
-    train_ids, test_ids = _split_bridges(panel, seed, test_fraction)
-    train_panel = panel[panel["id"].isin(train_ids)]
-    test_panel = panel[panel["id"].isin(test_ids)]
+def _fold_assignments(ids: np.ndarray, n_folds: int, seed: int) -> dict:
+    """Map each bridge id to a fold index 0..n_folds-1 (grouped by id)."""
+    rng = np.random.default_rng(seed)
+    shuffled = rng.permutation(np.sort(ids))
+    folds = {}
+    for i, bid in enumerate(shuffled):
+        folds[bid] = i % n_folds
+    return folds
 
-    train_eval = _build_pairs(train_panel, FIT_START, FIT_END)
-    test_eval = _build_pairs(test_panel, FIT_START, FIT_END)
-    if test_eval.empty:
-        raise ValueError("empty test evaluation set")
 
-    y = test_eval["dropped"].to_numpy()
+def cross_validate(panel: pd.DataFrame, start: int = FIT_START,
+                   end: int = FIT_END, n_folds: int = N_FOLDS,
+                   seed: int = CV_SEED) -> dict:
+    """Grouped 5-fold CV. Returns per-model lists of fold AUC and log loss."""
+    ids = panel["id"].unique()
+    fold_of = _fold_assignments(ids, n_folds, seed)
 
-    # --- fit the two models on the training bridges ------------------------
-    grouped = fit_decline(train_panel, FIT_START, FIT_END)
-    logistic = fit_logistic(train_panel, FIT_START, FIT_END)
+    metrics = {k: {"auc": [], "log_loss": []} for k in MODEL_ORDER}
+    total_pairs = 0
+    total_pos = 0
 
-    # --- predictions on the held-out test pairs ----------------------------
-    p_grouped = _grouped_probs(grouped, test_eval)
-    p_logistic = logistic.interval_prob_frame(test_eval)
-    base = _baseline(train_eval)
-    p_base = np.array(
-        [base["per_cond"].get(int(c), base["overall"]) for c in test_eval["cond"]]
-    )
+    for f in range(n_folds):
+        test_ids = {bid for bid, fi in fold_of.items() if fi == f}
+        train_ids = {bid for bid, fi in fold_of.items() if fi != f}
+        train_panel = panel[panel["id"].isin(train_ids)]
+        test_eval = _build_pairs(panel[panel["id"].isin(test_ids)], start, end)
+        train_eval = _build_pairs(train_panel, start, end)
+        if test_eval.empty or test_eval["dropped"].nunique() < 2:
+            continue
+        y = test_eval["dropped"].to_numpy()
+        total_pairs += len(test_eval)
+        total_pos += int(y.sum())
 
-    results = {
-        "n_train_bridges": len(train_ids),
-        "n_test_bridges": len(test_ids),
-        "n_test_pairs": int(len(test_eval)),
-        "test_positives": int(y.sum()),
-        "models": {
-            "grouped": {
-                "positives": int(y.sum()),
-                "log_loss": _log_loss(y, p_grouped),
-                "auc": _auc(y, p_grouped),
-            },
-            "logistic": {
-                "positives": int(y.sum()),
-                "log_loss": _log_loss(y, p_logistic),
-                "auc": _auc(y, p_logistic),
-            },
-            "baseline": {
-                "positives": int(y.sum()),
-                "log_loss": _log_loss(y, p_base),
-                "auc": _auc(y, p_base),
-            },
-        },
-        "drop_rate_by_cond": test_eval.groupby("cond")["dropped"]
-        .agg(["mean", "count"]).to_dict("index"),
+        grouped = fit_decline(train_panel, start, end)
+        logit_no = fit_logistic(train_panel, start, end,
+                                use_months_since_insp=False)
+        logit_yes = fit_logistic(train_panel, start, end,
+                                 use_months_since_insp=True)
+
+        preds = {
+            "baseline": _baseline_probs(train_eval, test_eval),
+            "grouped": _grouped_probs(grouped, test_eval),
+            "logistic_no_msi": logit_no.interval_prob_frame(test_eval),
+            "logistic_msi": logit_yes.interval_prob_frame(test_eval),
+        }
+        for k, p in preds.items():
+            metrics[k]["auc"].append(_auc(y, p))
+            metrics[k]["log_loss"].append(_log_loss(y, p))
+
+    summary = {}
+    for k in MODEL_ORDER:
+        aucs = np.array(metrics[k]["auc"])
+        lls = np.array(metrics[k]["log_loss"])
+        summary[k] = {
+            "auc_mean": float(aucs.mean()) if len(aucs) else float("nan"),
+            "auc_std": float(aucs.std(ddof=0)) if len(aucs) else float("nan"),
+            "ll_mean": float(lls.mean()) if len(lls) else float("nan"),
+            "ll_std": float(lls.std(ddof=0)) if len(lls) else float("nan"),
+        }
+    return {
+        "summary": summary,
+        "n_folds": n_folds,
+        "total_test_pairs": total_pairs,
+        "total_positives": total_pos,
     }
-    best = "logistic" if (
-        results["models"]["logistic"]["auc"] >= results["models"]["grouped"]["auc"]
-    ) else "grouped"
-    results["best_model"] = best
-    return results
 
 
-def select_model(panel: pd.DataFrame, start: int, end: int,
-                 seed: int = TEST_SEED, test_fraction: float = TEST_FRACTION):
-    """Fit both models and return whichever has the better held-out AUC.
+def _pick_by_cv(summary: dict) -> str:
+    """Prefer the simpler model unless a more complex one beats it by > 1 std.
 
-    Used by callers (and score) to pick the model to score with. Returns the
-    fitted model refit on ALL bridges in the interval once the better family is
-    chosen on the validation split.
+    Walk complexity order; adopt a more complex model only when its mean AUC
+    exceeds the current pick's mean AUC by more than the current pick's std.
     """
-    train_ids, test_ids = _split_bridges(panel, seed, test_fraction)
-    train_panel = panel[panel["id"].isin(train_ids)]
-    test_eval = _build_pairs(panel[panel["id"].isin(test_ids)], start, end)
+    best = MODEL_ORDER[0]
+    for cand in MODEL_ORDER[1:]:
+        cand_auc = summary[cand]["auc_mean"]
+        best_auc = summary[best]["auc_mean"]
+        best_std = summary[best]["auc_std"]
+        if cand_auc > best_auc + best_std:
+            best = cand
+    return best
 
-    grouped = fit_decline(train_panel, start, end)
-    logistic = fit_logistic(train_panel, start, end)
-    y = test_eval["dropped"].to_numpy()
-    auc_g = _auc(y, _grouped_probs(grouped, test_eval))
-    auc_l = _auc(y, logistic.interval_prob_frame(test_eval))
 
-    if auc_l >= auc_g:
-        return fit_logistic(panel, start, end)
-    return fit_decline(panel, start, end)
+def select_model(panel: pd.DataFrame, start: int = FIT_START, end: int = FIT_END,
+                 n_folds: int = N_FOLDS, seed: int = CV_SEED):
+    """Pick the model family by CV (simpler-preferred) and refit it on all data.
+
+    Returns ``(model, chosen_key, cv_summary)``. The grouped/logistic model is
+    refit on every bridge in the interval; the per-condition baseline, if it
+    wins, is returned as a grouped model (its closest equivalent) so callers
+    always get a scorable object.
+    """
+    cv = cross_validate(panel, start, end, n_folds, seed)
+    chosen = _pick_by_cv(cv["summary"])
+    if chosen == "logistic_msi":
+        model = fit_logistic(panel, start, end, use_months_since_insp=True)
+    elif chosen == "logistic_no_msi":
+        model = fit_logistic(panel, start, end, use_months_since_insp=False)
+    else:
+        # "grouped" and "baseline" both map to the grouped model (the baseline
+        # is a degenerate grouped model on condition only).
+        model = fit_decline(panel, start, end)
+    return model, chosen, cv["summary"]
+
+
+def _drop_rate_by_msi_bucket(pairs: pd.DataFrame) -> pd.DataFrame:
+    """Safety-drop rate by months_since_insp bucket: 0-12, 12-24, 24-36, 36+."""
+    edges = [0, 12, 24, 36, np.inf]
+    labels = ["0-12", "12-24", "24-36", "36+"]
+    buckets = pd.cut(pairs["months_since_insp"], bins=edges, labels=labels,
+                     right=False)
+    g = pairs.groupby(buckets, observed=False)["dropped"].agg(["mean", "count"])
+    return g
 
 
 def main() -> None:
@@ -173,23 +204,49 @@ def main() -> None:
         panel = make_panel()
         source = "synthetic fake_data.make_panel()"
 
-    r = run(panel)
+    cv = cross_validate(panel)
+    s = cv["summary"]
     print(f"source: {source}")
-    print(f"split: {r['n_train_bridges']} train / {r['n_test_bridges']} test "
-          f"bridges (seed {TEST_SEED}, {int(TEST_FRACTION*100)}% test)")
-    print(f"test pairs: {r['n_test_pairs']}  positives (safety drops): "
-          f"{r['test_positives']}")
+    print(f"{cv['n_folds']}-fold CV grouped by bridge id | "
+          f"pooled test pairs {cv['total_test_pairs']}, "
+          f"positives {cv['total_positives']}")
     print()
-    print(f"{'model':<12}{'positives':>11}{'log loss':>12}{'AUC':>10}")
-    for name in ("grouped", "logistic", "baseline"):
-        m = r["models"][name]
-        print(f"{name:<12}{m['positives']:>11}{m['log_loss']:>12.4f}{m['auc']:>10.4f}")
-    print(f"\nbest test AUC -> score() uses: {r['best_model']}")
+    print(f"{'model':<20}{'AUC (mean±std)':>20}{'log loss (mean±std)':>24}")
+    label = {
+        "baseline": "baseline",
+        "grouped": "grouped",
+        "logistic_no_msi": "logistic (no msi)",
+        "logistic_msi": "logistic (+ msi)",
+    }
+    for k in MODEL_ORDER:
+        m = s[k]
+        auc = f"{m['auc_mean']:.4f} ± {m['auc_std']:.4f}"
+        ll = f"{m['ll_mean']:.4f} ± {m['ll_std']:.4f}"
+        print(f"{label[k]:<20}{auc:>20}{ll:>24}")
 
-    print("\ndrop rate by START condition (held-out test pairs):")
-    for cond in sorted(r["drop_rate_by_cond"]):
-        d = r["drop_rate_by_cond"][cond]
-        print(f"  cond {cond}: {d['mean']*100:5.1f}%  (n={int(d['count'])})")
+    chosen = _pick_by_cv(s)
+    print(f"\nselected by mean CV AUC (simpler preferred unless +1 std): "
+          f"{label[chosen]}")
+
+    # Fit the selected model on all bridges; if it's a logistic, print coefs.
+    model, chosen_key, _ = select_model(panel)
+    if hasattr(model, "coefficients"):
+        print("\nselected logistic coefficients (sorted by |value|):")
+        for name, val in model.coefficients().items():
+            print(f"  {name:<28}{val:+.4f}")
+    else:
+        print("\nselected model is grouped; no logistic coefficients to show.")
+
+    # Safety-drop rate by months_since_insp bucket, over all 4-year pairs.
+    from .data import FOUR_YEAR_PAIRS
+    allp = pd.concat(
+        [_build_pairs(panel, a, b) for a, b in FOUR_YEAR_PAIRS],
+        ignore_index=True,
+    )
+    print("\nsafety-drop rate by months_since_insp bucket (all 4yr pairs):")
+    byb = _drop_rate_by_msi_bucket(allp)
+    for bucket, row in byb.iterrows():
+        print(f"  {str(bucket):<7} {row['mean']*100:5.1f}%  (n={int(row['count'])})")
 
 
 if __name__ == "__main__":

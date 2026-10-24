@@ -59,11 +59,22 @@ material one-hot (training vocabulary), age, log1p(ADT), insp_freq_mo,
 fracture_critical, underwater; fits sklearn `LogisticRegression`. Exposes the
 same `interval_prob(rec)` / `horizon_months` interface as the grouped model.
 
-### Model selection
+### months_since_insp feature
 
-`validate.select_model` fits both on the 80% split, compares held-out AUC, and
-returns the better family refit on all bridges. `score` works with whichever
-model it's handed.
+Months from `insp_date` to the reference date (April 1 of the row's year for a
+pair, or the `asof` date at scoring), capped at 60. Falls back to
+`insp_freq_mo` only when `insp_date` is missing, with the fallback flagged in
+the reason. Toggleable in the logistic model so CV can measure its value.
+
+### Model selection (grouped 5-fold CV)
+
+`validate.cross_validate` runs 5-fold CV grouped by bridge id (a bridge is
+never split across folds) and reports mean ± std AUC/log loss for four models:
+grouped, logistic(no msi), logistic(+ msi), baseline. `select_model` walks the
+complexity order and adopts a more complex model only when its mean AUC beats
+the current pick by more than the current pick's std — otherwise the simpler
+model wins. The chosen family is refit on all bridges. `score` works with
+whichever model it's handed, passing `asof` when the model accepts it.
 
 ### `score(table, rates, asof)`
 
