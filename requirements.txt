@@ -3,5 +3,6 @@ pyarrow
 scikit-learn
 ortools
 streamlit
+pydeck
 numpy
 matplotlib
