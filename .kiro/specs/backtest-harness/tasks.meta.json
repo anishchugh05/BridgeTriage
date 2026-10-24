@@ -132,6 +132,18 @@
         "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
         "timestamp": 1792864990168
       }
+    ],
+    "12. Property: no duplicate selections": [
+      {
+        "executionId": "47f1217e-3042-4a46-b6f7-ce7e7d3ee32c",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865105478
+      },
+      {
+        "executionId": "47f1217e-3042-4a46-b6f7-ce7e7d3ee32c",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865227051
+      }
     ]
   }
 }

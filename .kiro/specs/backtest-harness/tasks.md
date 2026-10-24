@@ -72,7 +72,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R14.1_
   - Demo: `python -m pytest planner/properties.py::test_budget_compliance -q`
 
-- [ ] 12. Property: no duplicate selections
+- [x] 12. Property: no duplicate selections
   - `test_no_duplicates()`: len(selected) == len(set(selected)), every method and budget
   - _Requirements: R14.2_
   - Demo: `python -m pytest planner/properties.py::test_no_duplicates -q`
