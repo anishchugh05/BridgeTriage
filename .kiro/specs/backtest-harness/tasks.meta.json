@@ -144,6 +144,42 @@
         "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
         "timestamp": 1792865227051
       }
+    ],
+    "13. Property: deterioration monotonicity": [
+      {
+        "executionId": "6192f65f-505c-445d-871c-223d6924b8cc",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865289996
+      },
+      {
+        "executionId": "6192f65f-505c-445d-871c-223d6924b8cc",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865432368
+      }
+    ],
+    "14. Property: oracle upper bound (soft aggregate)": [
+      {
+        "executionId": "e02abbb0-2976-443c-8a6e-c7548cf621e6",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865509308
+      },
+      {
+        "executionId": "e02abbb0-2976-443c-8a6e-c7548cf621e6",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865647580
+      }
+    ],
+    "15. Property: exclusion consistency": [
+      {
+        "executionId": "e02abbb0-2976-443c-8a6e-c7548cf621e6",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865647538
+      },
+      {
+        "executionId": "e02abbb0-2976-443c-8a6e-c7548cf621e6",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865819438
+      }
     ]
   }
 }

@@ -77,17 +77,17 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R14.2_
   - Demo: `python -m pytest planner/properties.py::test_no_duplicates -q`
 
-- [ ] 13. Property: deterioration monotonicity
+- [x] 13. Property: deterioration monotonicity
   - `test_deterioration_monotonicity()` (no arguments) per R14.3: (a) exhaustive min step over all 11³ (deck, super, sub) triples (0–9 + NaN) vs a reference implementation; (b) safety-drop/exclusion comparison over all 11×11 (min_2018, min_2022) combos incl. NaN against `is_safety_drop = (end < start) and (end <= 4)`; (c) 20,000 random triple pairs vectorized through `apply_exclusion_and_label` vs the reference
   - _Requirements: R14.3_
   - Demo: `python -m pytest planner/properties.py::test_deterioration_monotonicity -q`
 
-- [ ] 14. Property: oracle upper bound (soft aggregate)
+- [x] 14. Property: oracle upper bound (soft aggregate)
   - `test_oracle_upper_bound()`: over 50 make_fake seeds, mean oracle weighted recall ≥ each method's mean − 0.01 per budget; per-seed violations reported as a table, no single-seed failure; real-data leg when adapter output exists; unweighted NOT tested
   - _Requirements: R14.4_
   - Demo: `python -m pytest planner/properties.py::test_oracle_upper_bound -q`
 
-- [ ] 15. Property: exclusion consistency
+- [x] 15. Property: exclusion consistency
   - `test_exclusion_consistency()`: no excluded id selected; pool = input − (all R2 reasons incl. duplicates and missing year_built/adt); excluded ids absent from budget denominator
   - _Requirements: R14.5_
   - Demo: `python -m pytest planner/properties.py::test_exclusion_consistency -q`
