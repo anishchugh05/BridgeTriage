@@ -180,6 +180,30 @@
         "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
         "timestamp": 1792865819438
       }
+    ],
+    "16. Property: sanity — noise=0 near oracle (\"ceiling (uses truth)\")": [
+      {
+        "executionId": "2855cf19-beb8-4cb3-8c98-8210e788d31e",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792865975571
+      },
+      {
+        "executionId": "2855cf19-beb8-4cb3-8c98-8210e788d31e",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792866099112
+      }
+    ],
+    "17. Property: sanity — signal=0 near random": [
+      {
+        "executionId": "2855cf19-beb8-4cb3-8c98-8210e788d31e",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792866099087
+      },
+      {
+        "executionId": "2855cf19-beb8-4cb3-8c98-8210e788d31e",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792866292294
+      }
     ]
   }
 }

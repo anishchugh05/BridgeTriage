@@ -92,12 +92,12 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R14.5_
   - Demo: `python -m pytest planner/properties.py::test_exclusion_consistency -q`
 
-- [ ] 16. Property: sanity — noise=0 near oracle ("ceiling (uses truth)")
+- [x] 16. Property: sanity — noise=0 near oracle ("ceiling (uses truth)")
   - `test_sanity_noise_zero_near_oracle()`: make_fake(signal=1, noise=0), model score = truth.p_decline·log1p(adt), labeled "ceiling (uses truth)"; run once, record realized model/oracle weighted-recall ratio per budget, REPORT the ratios, set the assertion bar from the realized ratios (not a fixed constant)
   - _Requirements: R14.6_
   - Demo: `python -m pytest planner/properties.py::test_sanity_noise_zero_near_oracle -q`
 
-- [ ] 17. Property: sanity — signal=0 near random
+- [x] 17. Property: sanity — signal=0 near random
   - `test_sanity_signal_zero_near_random()` (oracle excluded; baselines run with tiebreak="random"): Leg B is the only gate — per seed d = method recall − dataset random_avg mean (20 test seeds), assert |mean(d)| ≤ BAND_K·std(d)/√20 over 20 make_fake seeds, computed for BOTH unweighted recall AND weighted recall
   - _Requirements: R14.7_
   - Demo: `python -m pytest planner/properties.py::test_sanity_signal_zero_near_random -q`
