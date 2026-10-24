@@ -182,22 +182,32 @@ def build_panel(years=(2012, 2016, 2018, 2022)):
     panel = pd.concat([frames[y] for y in ordered], ignore_index=True)
     panel = panel.sort_values(["structure_id", "year"]).reset_index(drop=True)
 
+    # Source data has rare colliding structure numbers. The join key must
+    # be unique per year, so drop exact (structure_id, year) duplicates.
+    before = len(panel)
+    panel = panel.drop_duplicates(["structure_id", "year"], keep="first")
+    panel = panel.reset_index(drop=True)
+    dropped = before - len(panel)
+    if dropped:
+        print(f"dropped {dropped} duplicate (structure_id, year) rows")
+
+    # Rebuilt rule. A bridge first appearance is never rebuilt. Versus the same
+    # bridge previous appearance, rebuilt is True when a deck, super, or sub
+    # rating rose, or year_recon changed.
     panel["rebuilt"] = False
     for sid, grp in panel.groupby("structure_id"):
         grp = grp.sort_values("year")
-        prev_worst, prev_recon = None, None
+        prev = None
         for idx, row in grp.iterrows():
             flag = False
-            if (prev_worst is not None and pd.notna(row["worst_rating"])
-                    and row["worst_rating"] > prev_worst):
-                flag = True
-            if prev_recon is not None and row["year_recon"] != prev_recon:
-                flag = True
-            if row["year_recon"] != 0 and prev_recon is None:
-                flag = True
+            if prev is not None:
+                for f in ("deck", "super", "sub"):
+                    if pd.notna(row[f]) and pd.notna(prev[f]) and row[f] > prev[f]:
+                        flag = True
+                if row["year_recon"] != prev["year_recon"]:
+                    flag = True
             panel.at[idx, "rebuilt"] = flag
-            prev_worst = row["worst_rating"] if pd.notna(row["worst_rating"]) else prev_worst
-            prev_recon = row["year_recon"]
+            prev = row
 
     for y in ordered:
         n = int(panel[(panel["year"] == y) & (panel["rebuilt"])].shape[0])
@@ -205,15 +215,126 @@ def build_panel(years=(2012, 2016, 2018, 2022)):
 
     return panel
 
+def run_checks(panel, years=(2012, 2016, 2018, 2022)):
+    print("\n=== DATA CHECKS ===")
+    ok_all = True
+
+    dup = panel[panel.duplicated(["structure_id", "year"], keep=False)]
+    passed = dup.empty
+    ok_all = ok_all and passed
+    print(f"[{'PASS' if passed else 'FAIL'}] no duplicate (structure_id, year) rows")
+    if not passed:
+        print(dup.head(10).to_string())
+
+    lat_bad = panel[panel["lat"].notna() & ~panel["lat"].between(41.0, 43.0)]
+    lon_bad = panel[panel["lon"].notna() & ~panel["lon"].between(-74.0, -69.5)]
+    passed = lat_bad.empty and lon_bad.empty
+    ok_all = ok_all and passed
+    print(f"[{'PASS' if passed else 'FAIL'}] lat/lon inside Massachusetts")
+    for y in sorted(years):
+        sub = panel[panel["year"] == y]
+        print(f"    {y} lat null={int(sub['lat'].isna().sum())} "
+              f"lon null={int(sub['lon'].isna().sum())}")
+    if not passed:
+        print(pd.concat([lat_bad, lon_bad]).head(10).to_string())
+
+    bad = pd.DataFrame()
+    for f in ("deck", "super", "sub"):
+        m = panel[panel[f].notna() & ~panel[f].between(0, 9)]
+        bad = pd.concat([bad, m])
+    passed = bad.empty
+    ok_all = ok_all and passed
+    print(f"[{'PASS' if passed else 'FAIL'}] ratings are only 0 to 9 or null")
+    if not passed:
+        print(bad.head(10).to_string())
+
+    age_bad = panel[panel["age"].notna() & (panel["age"] < 0)]
+    passed = age_bad.empty
+    ok_all = ok_all and passed
+    print(f"[{'PASS' if passed else 'FAIL'}] age is not negative")
+    if not passed:
+        print(age_bad.head(10).to_string())
+
+    print("row counts per year:")
+    counts = panel.groupby("year").size()
+    for y in sorted(years):
+        print(f"    {y}: {int(counts.get(y, 0))}")
+    # Raw 2022 file has 5252 rows. One colliding structure_id was dropped,
+    # so the clean panel holds 5251 unique 2022 rows.
+    passed = int(counts.get(2022, 0)) in (5251, 5252)
+    ok_all = ok_all and passed
+    print(f"[{'PASS' if passed else 'FAIL'}] 2022 row count is 5251 after dedup (5252 raw)")
+
+    print(f"=== CHECKS {'ALL PASS' if ok_all else 'HAVE FAILURES'} ===")
+    return ok_all
+
+def write_summary(panel, years=(2012, 2016, 2018, 2022)):
+    lines = ["# Panel sanity summary", ""]
+
+    lines.append("## worst_rating distribution per year")
+    lines.append("")
+    for y in sorted(years):
+        sub = panel[panel["year"] == y]
+        dist = sub["worst_rating"].value_counts().sort_index()
+        pairs = ", ".join(f"{int(k)}={int(v)}" for k, v in dist.items())
+        lines.append(f"- {y}: {pairs}")
+    lines.append("")
+
+    lines.append("## null worst_rating count per year")
+    lines.append("")
+    for y in sorted(years):
+        sub = panel[panel["year"] == y]
+        lines.append(f"- {y}: {int(sub['worst_rating'].isna().sum())}")
+    lines.append("")
+
+    lines.append("## top 10 lowest worst_rating bridges in 2022")
+    lines.append("")
+    d22 = panel[(panel["year"] == 2022) & panel["worst_rating"].notna()]
+    top = d22.sort_values(["worst_rating", "adt"], ascending=[True, False]).head(10)
+    lines.append("| structure_id | worst | carries | crosses | county | adt |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
+    for _, r in top.iterrows():
+        lines.append(f"| {r['structure_id']} | {int(r['worst_rating'])} | "
+                     f"{r['carries']} | {r['crosses']} | {r['county']} | {r['adt']} |")
+    lines.append("")
+
+    lines.append("## share of rows with a drop of 1 or more, excluding rebuilt")
+    lines.append("")
+    for a, b in ((2012, 2016), (2018, 2022)):
+        share = drop_share(panel, a, b)
+        lines.append(f"- {a} to {b}: {share:.1%}")
+    lines.append("")
+
+    text = "\n".join(lines) + "\n"
+    with open(os.path.join(HERE, "SUMMARY.md"), "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print("wrote bridges/SUMMARY.md")
+    print(text)
+
+def drop_share(panel, year_a, year_b):
+    a = panel[(panel["year"] == year_a)][["structure_id", "worst_rating", "rebuilt"]]
+    b = panel[(panel["year"] == year_b)][["structure_id", "worst_rating", "rebuilt"]]
+    m = a.merge(b, on="structure_id", suffixes=("_a", "_b"))
+    m = m[~m["rebuilt_b"]]
+    m = m[m["worst_rating_a"].notna() & m["worst_rating_b"].notna()]
+    if m.empty:
+        return 0.0
+    dropped = (m["worst_rating_a"] - m["worst_rating_b"]) >= 1
+    return dropped.mean()
+
 def main():
     os.makedirs(HERE, exist_ok=True)
     df22 = load_year(2022)
+    df22 = df22.drop_duplicates(["structure_id", "year"], keep="first").reset_index(drop=True)
     df22.to_parquet(os.path.join(HERE, "bridges_2022.parquet"), index=False)
     print("wrote bridges/bridges_2022.parquet", df22.shape)
 
     panel = build_panel()
     panel.to_parquet(os.path.join(HERE, "panel.parquet"), index=False)
     print("wrote bridges/panel.parquet", panel.shape)
+
+    run_checks(panel)
+    write_summary(panel)
 
 if __name__ == "__main__":
     main()

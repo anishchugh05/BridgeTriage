@@ -1,21 +1,64 @@
-# National Bridge Inventory, Massachusetts
+# Bridges data contract (Person A)
 
-Saved 2026-10-18 for Hackachusetts.
+Clean Massachusetts NBI tables for B (decline model) and C (picker and backtest).
+Do not rename or drop columns. The schema is fixed once published.
 
-2022 FHWA delimited file for Massachusetts, reduced to the columns most useful in a spreadsheet. The live link is the full delimited file.
+## Files
 
-Rows in data.csv: 5252
+- panel.parquet: all four years (2012, 2016, 2018, 2022) joined. Use this for
+  real work: training and backtest.
+- bridges_2022.parquet: the single cleaned 2022 year.
+- fake.parquet: 200 fake rows in the exact schema. Use this to wire up your code
+  before the real data is ready.
 
-Columns: structure_id, carries, crosses, county, year_built, kind, deck_condition, superstructure_condition, substructure_condition
+Load with pandas:
 
-How to use it
+    import pandas as pd
+    panel = pd.read_parquet("bridges/panel.parquet")
 
-- Spreadsheets: open data.csv in Excel or Google Sheets.
-- Fresh copy: run `python fetch.py` or `node fetch.js`. Both call the URL below and save the response.
-- The preview on the Hackachusetts site is a few rows of this same table.
+## Schema (20 columns, fixed order)
 
-Direct request
+structure_id, year, county, material, age, adt, deck, super, sub,
+worst_rating, insp_freq_months, fracture_critical, underwater,
+year_recon, rebuilt, lat, lon, carries, crosses, improvement_cost
 
-https://www.fhwa.dot.gov/bridge/nbi/2022/delimited/MA22.txt
+- structure_id: NBI structure number, the join key across years.
+- year: 2012, 2016, 2018, or 2022.
+- county: Massachusetts county name (mapped from the FIPS code).
+- material: structure kind (item 043A).
+- age: year minus year built.
+- adt: average daily traffic.
+- deck, super, sub: condition ratings 0 to 9, or null.
+- worst_rating: min of deck, super, sub. Null only when all three are null.
+- insp_freq_months: inspection frequency.
+- fracture_critical, underwater: booleans.
+- year_recon: year reconstructed, 0 means never.
+- rebuilt: see definition below.
+- lat, lon: decimal degrees inside Massachusetts, or null.
+- carries, crosses: what the bridge carries and what it crosses.
+- improvement_cost: bridge improvement cost (item 094).
 
-Check the source license before publishing a project.
+## Definitions
+
+- worst_rating: the min of deck, super, sub. One number for a bridge condition.
+- Drop: worst_rating falls by 1 or more between two appearances of the same
+  bridge. This is what we predict and try to catch.
+- Rebuilt: versus the same bridge previous appearance, a deck, super, or sub
+  rating rose, or year_recon changed. A first appearance is never rebuilt.
+  Rebuilt is not natural decline, so exclude these rows.
+
+## Warnings
+
+- Year gaps are uneven: 2012 to 2016 is 4 years, 2016 to 2018 is 2 years,
+  2018 to 2022 is 4 years. Train and backtest should both use the 4 year gaps
+  so the horizon matches.
+- Null worst_rating rows (culverts, dam spillways, and similar) must be dropped
+  or handled on purpose. There are about 300 per year.
+- Exclude rebuilt rows from training and from the backtest.
+
+## Notes
+
+- The 2022 raw file has one colliding structure number. That duplicate is
+  dropped so (structure_id, year) is unique.
+- Rebuilt counts per year: 2012 = 0, 2016 = 518, 2018 = 325, 2022 = 394.
+- See SUMMARY.md for distributions and drop shares.
