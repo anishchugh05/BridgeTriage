@@ -376,6 +376,60 @@ def pick(scores, budget, candidates, pool_cost_info, county_fee,
             seen.add(counties[i])
     return selected
 
+# ---------------------------------------------------------------------------
+# Algorithm 5: Scoring (R6-R9) — all return dict structure_id -> float,
+# higher = picked first; tie-break behavior comes from pick's tiebreak
+# argument (R5.5), never from the scoring functions themselves.
+# ---------------------------------------------------------------------------
+
+def score_worst_first(candidates):
+    """worst_first baseline (R6): score = -min_2018.
+
+    Rank by score only (rank_by_value_per_cost=False): the bridge with the
+    lowest 2018 condition min gets the highest score and is picked first.
+    Returns a dict structure_id -> float keyed by the candidate index.
+    """
+    return {sid: -float(m) for sid, m in candidates["min_2018"].items()}
+
+
+def score_oldest_first(candidates):
+    """oldest_first baseline (R7): score = -year_built.
+
+    Rank by score only: the oldest bridge gets the highest score and is
+    picked first. Returns a dict structure_id -> float keyed by the
+    candidate index.
+    """
+    return {sid: -float(y) for sid, y in candidates["year_built"].items()}
+
+
+def score_random(candidates, seed):
+    """random_avg baseline (R8): score = uniform random draw per candidate.
+
+    One independent draw from np.random.default_rng(seed) per candidate,
+    ranked by score only. Scores are almost surely distinct, so pick's
+    tiebreak has no effect. Returns a dict structure_id -> float keyed by
+    the candidate index.
+    """
+    rng = np.random.default_rng(seed)
+    return {sid: float(s) for sid, s in zip(candidates.index, rng.random(len(candidates)))}
+
+
+def score_oracle(outcomes):
+    """Oracle (R9): score = log1p(adt) if worse, else 0.
+
+    Uses the realized outcomes' worse labels — the best achievable signal.
+    Ranked by value per cost (rank_by_value_per_cost=True in pick, which
+    does the /inspect_cost division): best achievable weighted recall per
+    dollar under the budget rule. Scores are non-negative, satisfying
+    pick's value-per-cost validation (R5.3). Returns a dict
+    structure_id -> float.
+    """
+    return {
+        sid: float(np.log1p(o["adt"])) if o["worse"] else 0.0
+        for sid, o in outcomes.items()
+    }
+
+
 def _logistic(x):
     return 1.0 / (1.0 + np.exp(-np.asarray(x, dtype=float)))
 

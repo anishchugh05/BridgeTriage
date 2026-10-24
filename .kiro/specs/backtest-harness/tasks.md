@@ -42,7 +42,7 @@ except ValueError: print('signal=0,noise=0 rejected')"`
 try: pick({'a':1.0},0.5,c,p,5.0,tiebreak='random'); assert False
 except ValueError: print('random tiebreak without rng rejected')"`
 
-- [ ] 6. Implement the four scoring functions
+- [x] 6. Implement the four scoring functions
   - `score_worst_first = -min_2018`, `score_oldest_first = -year_built`, `score_random(candidates, seed)` via `np.random.default_rng`, `score_oracle = worse*log1p(adt)` (value-per-cost); tie-break behavior comes from pick's `tiebreak` argument
   - _Requirements: R6, R7, R8, R9_
   - Demo: `python -c "import pandas as pd; from planner.backtest import score_worst_first; c=pd.DataFrame({'county':['x','x'],'inspect_cost':[1.0,1.0],'adt':[1.0,1.0],'year_built':[1950,1960],'min_2018':[3.0,7.0]},index=['a','b']); s=score_worst_first(c); assert s['a']==-3.0 and s['a']>s['b']; print('worst_first: a(-3) picked before b(-7)')"`
