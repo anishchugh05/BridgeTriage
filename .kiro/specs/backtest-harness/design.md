@@ -15,7 +15,7 @@ Implements requirements.md (the single source of truth). Where behavior is speci
                           evaluate_metrics → run_backtest → plot (+bootstrap_gap_ci)
 
 make_fake(n, seed, signal, noise) → (df_2018, df_2022, truth)  [test data source]
-adapt_nbi(MA18.txt, MA22.txt) → (df_2018, df_2022)             [real data source]
+adapt_panel(bridges/panel.parquet) → (df_2018, df_2022)        [real data source]
 ```
 
 ## Data Model
@@ -207,34 +207,30 @@ pool from Algorithm 2, safety-drop label) lands in [0.12, 0.22]; store as
 module constant. Measurable because the pipeline label equals the drawn label
 by construction (R14.9). Verified by R14.8.
 
-### Algorithm 10: adapt_nbi(path_2018, path_2022, flat_inspect_cost, county_fee)
+### Algorithm 10: adapt_panel(path="bridges/panel.parquet", flat_inspect_cost=1.0)
+Canonical signature (requirements R1 formats out):
+`adapt_panel(path="bridges/panel.parquet", flat_inspect_cost=1.0) -> (df_2018, df_2022)`
 ```
-1. Read raw files (dtype=str, latin-1). Select columns BY NAME ONLY
-   (no suffix matching): STRUCTURE_NUMBER_008, COUNTY_CODE_003, ADT_029,
-   DECK_COND_058, SUPERSTRUCTURE_COND_059, SUBSTRUCTURE_COND_060,
-   YEAR_BUILT_027, YEAR_RECONSTRUCTED_106; plus LOWEST_RATING in the
-   2022 file if present (diagnostic only).
-2. Cleaning ORDER (fixed): strip whitespace from selected columns →
-   treat "" and "N" as NaN → convert rating/year/ADT columns to numeric.
-3. County codes: strip, then zero-pad to 3 digits in BOTH years
-   (no name mapping).
-4. structure_id: strip whitespace in BOTH years.
-5. Print BOTH unmatched counts: 2018 IDs absent from 2022, and
-   2022 IDs absent from 2018.
-6. If LOWEST_RATING exists in the 2022 file: print how many rows differ
-   from the computed min(deck, super, sub) ignoring NaN (diagnostic of
-   our min computation; no rows are changed).
-7. 2018 table → R1 contract; inspect_cost = flat placeholder
-   (ASSUMPTION, "placeholder units", labeled in code and report).
-   Item _094 exists but is an improvement cost — NOT used.
-8. 2022 table: rebuilt = (YEAR_RECONSTRUCTED_106 in 2022) >
-   (YEAR_RECONSTRUCTED_106 in 2018), blank/0 treated as 0.
-   Print count of rebuilt=True bridges.
-9. Validate against R1; return.
-Real runs use flat inspect_cost = 1, COUNTY_FEE = 5 ("placeholder units",
-labeled assumptions); report notes: with flat cost, value-per-cost
-ranking == raw-score ranking. Bridges replaced under a new ID appear as
-missing and are excluded like any missing bridge (requirements R2.4).
+1. Read the parquet ONCE; never mutate it. Select columns BY NAME ONLY:
+   structure_id, year, county, age, adt, deck, super, sub, rebuilt.
+   Ignore year 2012 and 2016 rows.
+2. df_2018 = rows with year == 2018, columns exactly (R1):
+   structure_id (stripped str), county, year_built = 2018 - age, adt,
+   deck, super, sub, inspect_cost = flat_inspect_cost
+   ("placeholder units", labeled assumption; improvement_cost column
+   exists but is an improvement cost — NOT used).
+3. df_2022 = rows with year == 2022, columns exactly (R1):
+   structure_id (stripped), deck, super, sub, rebuilt — taken DIRECTLY
+   from the panel's rebuilt column (A's definition: the bridge improved
+   or was reconstructed); do NOT recompute it.
+4. Print: row counts per year (all years present, noting 2012/2016 are
+   ignored), count of rebuilt=True in 2022, count of 2018 IDs absent
+   from 2022, count of 2022 IDs absent from 2018.
+5. Return (df_2018, df_2022) in the R1 formats.
+Real run uses county_fee = 5 ("placeholder units", labeled assumption);
+report notes: with flat cost, value-per-cost ranking == raw-score
+ranking. Bridges replaced under a new ID appear as missing and are
+excluded like any missing bridge (requirements R2.4).
 ```
 
 ## Module Structure
@@ -244,7 +240,7 @@ missing and are excluded like any missing bridge (requirements R2.4).
 `planner/backtest.py`: load_and_validate, apply_exclusion_and_label,
 is_safety_drop, marginal_cost, cost_accounting, pick, score_worst_first,
 score_oldest_first, score_random, score_oracle, evaluate_metrics, make_fake,
-run_backtest, bootstrap_gap_ci, plot, adapt_nbi.
+run_backtest, bootstrap_gap_ci, plot, adapt_panel.
 
 `planner/properties.py` (all test functions take NO arguments):
 test_budget_compliance, test_no_duplicates, test_deterioration_monotonicity,

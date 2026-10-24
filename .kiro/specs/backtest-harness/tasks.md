@@ -117,27 +117,22 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R14.10_
   - Demo: `python -m pytest planner/properties.py::test_is_safety_drop_parity -q` (reports SKIPPED until model exists)
 
-- [ ] 21. Refactor fetch_years.py — required
-  - Download to a temp filename and rename on success (no partial files in data/)
-  - Wrap logic in functions with an `if __name__ == "__main__":` guard
-  - Resolve data/ relative to the script's own folder (works from any cwd)
-  - Write the 2018-vs-2022 overlap summary to `data/overlap.txt` (in addition to stdout)
-  - _Requirements: supports Algorithm 10 inputs_
-  - Demo: `python fetch_years.py && test -s data/overlap.txt && head -3 data/overlap.txt`
-
-- [ ] 22. Build NBI adapter (adapt_nbi) — required
-  - Run refactored `fetch_years.py` to obtain MA18.txt / MA22.txt (or confirm present in data/); implement `adapt_nbi(path_2018, path_2022, flat_inspect_cost, county_fee)` per Algorithm 10
-  - Select columns BY NAME ONLY; cleaning order: strip whitespace → ""/"N"→NaN → numeric; county codes stripped and zero-padded to 3 digits in both years; structure_id stripped both years
-  - Print BOTH unmatched counts (2018-absent-from-2022 and 2022-absent-from-2018); if LOWEST_RATING exists in 2022, print rows differing from computed min
-  - rebuilt = (YEAR_RECONSTRUCTED_106 in 2022) > (YEAR_RECONSTRUCTED_106 in 2018), blank/0 as 0; inspect_cost flat placeholder in "placeholder units", labeled as assumption (item _094 exists but is improvement cost, not used); print count of rebuilt=True bridges
+- [x] 21. Build panel adapter (adapt_panel) — required
+  - Implement `adapt_panel(path="bridges/panel.parquet", flat_inspect_cost=1.0) -> (df_2018, df_2022)` per Algorithm 10, returning the R1 formats
+  - df_2018 = year == 2018 rows: structure_id (stripped str), county, year_built = 2018 - age, adt, deck, super, sub, inspect_cost = flat_inspect_cost ("placeholder units", labeled assumption)
+  - df_2022 = year == 2022 rows: structure_id (stripped), deck, super, sub, rebuilt taken DIRECTLY from the panel's rebuilt column (A's definition: improved or reconstructed); do NOT recompute it
+  - Never mutate the parquet; select columns by name only; ignore year 2012 and 2016 rows
+  - Print: row counts per year, count of rebuilt=True in 2022, count of 2018 ids absent from 2022, count of 2022 ids absent from 2018
   - _Requirements: R1, R2, Assumptions 2, 8_
-  - Demo: `python -c "from planner.backtest import adapt_nbi; d18,d22=adapt_nbi('data/MA18.txt','data/MA22.txt',1.0,5.0); print(len(d18),'bridges adapted; rebuilt/unmatched counts printed above')"`
+  - Demo: `python -c "from planner.backtest import adapt_panel; a,b=adapt_panel(); print(len(a), len(b))"` (prints `5215 5251`)
 
-- [ ] 23. Run baselines on real data — required
-  - Run worst_first, oldest_first, random_avg, oracle on adapted data, ALL budgets, `tiebreaks=("adt", "random")` so the ADT tie-break effect is visible; report both (the "random" leg is one mean row per baseline)
-  - Print: pool size, count of worse bridges, recall and weighted recall per method per budget, filling blank tiebreak with "adt" before printing; note that flat inspect_cost = 1 makes value-per-cost ranking equal raw-score ranking (placeholder units); save plots
+- [ ] 22. Run baselines on real data — required
+  - `run_backtest(df_18, df_22, county_fee=5.0, tiebreaks=("adt","random"))` on the adapted panel data, budgets as usual
+  - Print: pool size, exclusion counts by reason, number of safety-drop decliners (count_worse_in_pool), then recall and weighted recall per method per budget — show only non-random_avg-per-seed rows (aggregate rows for random_avg)
+  - Note in the output that flat inspect_cost makes value-per-cost ranking equal raw-score ranking ("placeholder units")
+  - Save plots with prefix /tmp/real
   - _Requirements: R10, R11, R12_
-  - Demo: `python -c "from planner.backtest import *; d18,d22=adapt_nbi('data/MA18.txt','data/MA22.txt',1.0,5.0); r=run_backtest(d18,d22,5.0,tiebreaks=('adt','random')); r['tiebreak']=r['tiebreak'].fillna('adt'); print(r[['method','budget','tiebreak','recall','weighted_recall']].dropna())"`
+  - Demo: `python -c "from planner.backtest import *; a,b=adapt_panel(); d18,d22,i=load_and_validate(a,b); r=run_backtest(d18,d22,5.0,tiebreaks=('adt','random')); out=r[(~r.is_aggregate)|(r.method=='random_avg')]; print(out[['method','budget','tiebreak','recall','weighted_recall']])"`
 
 ## Task Dependency Graph
 
@@ -150,8 +145,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
  │              ├─→ 6 (scoring) ─→ 7 (metrics) ─→ 8 (run_backtest) ─→ 9 (plot) ─→ 10 (bootstrap_gap_ci)
  │              └────────────────── 2,3,4 feed 5 ─┘
  │
-11–20 (properties) depend on 1–8 (14 uses 22 output for its real-data leg; must pass on fake alone; 20 skips until model exists)
-21 (fetch_years refactor) is independent; produces raw inputs for 22
-22 (adapter) depends on 1 and 21
-23 (real-data run) depends on 22, 8, 9, 10; independent of 11–20
+11–20 (properties) depend on 1–8 (14 uses 21 output for its real-data leg; must pass on fake alone; 20 skips until model exists)
+21 (panel adapter) depends on 1 only; reads bridges/panel.parquet
+22 (real-data run) depends on 21, 8, 9, 10; independent of 11–20
 ```

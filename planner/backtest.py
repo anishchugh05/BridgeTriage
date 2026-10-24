@@ -664,6 +664,75 @@ def make_fake(n, seed, signal, noise):
     )
     return df_2018, df_2022, truth
 
+
+# ---------------------------------------------------------------------------
+# Algorithm 10: adapt_panel (real-data adapter)
+# ---------------------------------------------------------------------------
+
+PANEL_COLS_2018 = (
+    "structure_id", "county", "year_built", "adt",
+    "deck", "super", "sub", "inspect_cost",
+)
+PANEL_COLS_2022 = ("structure_id", "deck", "super", "sub", "rebuilt")
+
+
+def adapt_panel(path="bridges/panel.parquet", flat_inspect_cost=1.0):
+    """Adapt bridges/panel.parquet to the R1 (df_2018, df_2022) formats.
+
+    The parquet is never mutated; columns are selected by name only; year
+    2012 and 2016 rows are ignored.
+
+    df_2018 = rows with year == 2018: structure_id (stripped str), county,
+    year_built = 2018 - age, adt, deck, super, sub, inspect_cost =
+    flat_inspect_cost. The flat cost is a "placeholder units" ASSUMPTION
+    (the panel's improvement_cost column is an improvement cost, not an
+    inspection cost, and is NOT used).
+
+    df_2022 = rows with year == 2022: structure_id (stripped), deck, super,
+    sub, rebuilt — taken DIRECTLY from the panel's rebuilt column (A's
+    definition: the bridge improved or was reconstructed); it is NOT
+    recomputed here.
+
+    Prints row counts per year, the count of rebuilt=True in 2022, and both
+    unmatched-ID counts (2018-absent-from-2022 and 2022-absent-from-2018).
+    """
+    panel = pd.read_parquet(path)
+
+    counts = panel["year"].value_counts().sort_index()
+    for yr, n in counts.items():
+        note = "" if yr in (2018, 2022) else "  (ignored)"
+        print(f"year {yr}: {n} rows{note}")
+
+    rows18 = panel.loc[panel["year"] == 2018]
+    rows22 = panel.loc[panel["year"] == 2022]
+
+    df_2018 = pd.DataFrame({
+        "structure_id": rows18["structure_id"].astype(str).str.strip(),
+        "county": rows18["county"],
+        "year_built": 2018 - rows18["age"].astype(int),
+        "adt": rows18["adt"].astype(float),
+        "deck": rows18["deck"],
+        "super": rows18["super"],
+        "sub": rows18["sub"],
+        "inspect_cost": float(flat_inspect_cost),  # ASSUMPTION: placeholder units
+    })
+
+    df_2022 = pd.DataFrame({
+        "structure_id": rows22["structure_id"].astype(str).str.strip(),
+        "deck": rows22["deck"],
+        "super": rows22["super"],
+        "sub": rows22["sub"],
+        # A's definition (improved or reconstructed); NOT recomputed here.
+        "rebuilt": rows22["rebuilt"].astype(bool),
+    })
+
+    print(f"rebuilt=True in 2022: {int(df_2022['rebuilt'].sum())}")
+    ids18, ids22 = set(df_2018["structure_id"]), set(df_2022["structure_id"])
+    print(f"2018 ids absent from 2022: {len(ids18 - ids22)}")
+    print(f"2022 ids absent from 2018: {len(ids22 - ids18)}")
+
+    return df_2018, df_2022
+
 # ---------------------------------------------------------------------------
 # Algorithm 7: run_backtest (R11)
 # ---------------------------------------------------------------------------

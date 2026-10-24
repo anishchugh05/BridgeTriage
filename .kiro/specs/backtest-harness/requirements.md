@@ -236,7 +236,7 @@ Property tests use `RANDOM_SEEDS_TEST = range(20)` for random_avg (not the 200 p
 
 1. COUNTY_FEE is a fixed constant (parameter, not computed dynamically).
 
-2. Costs are static (2018 basis). NBI item _094 exists in the raw files but is an improvement cost, not an inspection cost — it is NOT used. For real NBI runs, `inspect_cost = 1` (flat) and `COUNTY_FEE = 5`, both labeled as assumptions in "placeholder units"; with flat inspect_cost, value-per-cost ranking equals raw-score ranking, and the report must note this.
+2. Costs are static (2018 basis). The panel's `improvement_cost` column is an improvement cost, not an inspection cost — it is NOT used. For the real run, `inspect_cost = 1` (flat) and `COUNTY_FEE = 5`, both labeled as assumptions in "placeholder units"; with flat inspect_cost, value-per-cost ranking equals raw-score ranking, and the report must note this.
 
 3. No bridges are added between datasets; bridges missing from 2022 are excluded.
 
@@ -248,4 +248,4 @@ Property tests use `RANDOM_SEEDS_TEST = range(20)` for random_avg (not the 200 p
 
 7. The candidate filter legitimately uses 2022 information because it defines the evaluation universe, not the prediction signal; identical for all methods.
 
-8. Real-data adapter: `rebuilt = (YEAR_RECONSTRUCTED_106 in the 2022 file) > (YEAR_RECONSTRUCTED_106 in the 2018 file)`, with blank/0 treated as 0. County codes are stripped and zero-padded to 3 digits in both years (no name mapping). structure_id whitespace is stripped in both years. Columns are selected by name only (no suffix matching).
+8. Real-data adapter: `adapt_panel(path="bridges/panel.parquet", flat_inspect_cost=1.0)`. The parquet is never mutated; columns are selected by name only; year 2012 and 2016 rows are ignored. `year_built = 2018 - age`. `rebuilt` is taken directly from the panel's `rebuilt` column (A's definition: the bridge improved or was reconstructed) and is NOT recomputed. structure_id whitespace is stripped in both years.
