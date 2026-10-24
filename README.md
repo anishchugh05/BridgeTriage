@@ -1,5 +1,8 @@
 # BridgeTriage
 
+<img width="1780" height="1033" alt="image" src="https://github.com/user-attachments/assets/365cff8d-653d-4544-92ff-41b0092195bc" />
+
+
 > **Evidence-first decision intelligence for Massachusetts bridge inspections.**
 >
 > BridgeTriage turns a versioned FHWA National Bridge Inventory panel into an auditable inspection-prioritization workflow: validate the source, learn deterioration risk without looking into the future, account for consequence and inspection cost, select within a budget, and measure the strategy against historical outcomes.
