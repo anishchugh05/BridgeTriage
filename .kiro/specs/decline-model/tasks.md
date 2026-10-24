@@ -57,8 +57,12 @@ spec was written to capture the implemented, tested behavior.
     safety-drop rate by months_since_insp bucket.
   - _Requirements: 4_
 
-- [x] 7. Implement `score` — p_worse, consequence, cost, score, reason
-  - Exact six-column, NaN-free output with a one-line reason per row.
+- [x] 7. Implement `score` — model-specific horizon scaling and normalized output
+  - Logistic: direct 12-month probability scaling, no recency hazard replay.
+  - Grouped: retain recency hazard path.
+  - Eight-column NaN-free output; `expected_drops_per_10k == score`.
+  - Use the labeled drone-flight cost/minutes estimate when no real inspection
+    price exists.
   - _Requirements: 5_
 
 - [x] 8. Fix inspection-date fallback (bug)
@@ -77,14 +81,25 @@ spec was written to capture the implemented, tested behavior.
   - _Requirements: 6.1_
 
 - [x] 11. Validation harness (`model/validate.py`)
-  - 80/20 bridge split (fixed seed), fit on 2012→2016 train, evaluate on
-    held-out 20%; report positives/log loss/AUC for grouped, logistic, and the
-    per-condition baseline; print drop rate by condition. Real-panel or
-    synthetic fallback.
+  - Five folds grouped by eligible bridge id; mean ± std AUC/log loss for all
+    four candidates; five-bin selected-model OOF calibration; inspection-age
+    drop rates and selected logistic coefficients.
   - _Requirements: 4, 6.2_
 
 - [x] 12. Test suite (`tests/test_model.py`)
-  - Safety-drop definition, rebuild exclusion, no-lookahead, clean output,
-    missing-date fallback, word-boundary crossings, material-name reasons, and
-    a logistic-model smoke test. 12 tests passing.
-  - _Requirements: 2b, 6.3_
+  - Target/rebuild/no-lookahead, direct logistic and grouped hazard paths,
+    normalized score formula, calibration, missing-date/crossing handling,
+    named coefficients, null-rating omission, and batch files. 20 tests.
+  - _Requirements: 2b, 5, 6.4_
+
+- [x] 13. Batch scorer (`model/run.py`)
+  - Select/refit on 2012→2016; score 2018/2022 on April 1; write both parquet
+    outputs under `data/processed/`.
+  - _Requirements: 6.3_
+
+- [x] 14. Drone-flight cost model (`model/flight_cost.py`)
+  - Estimate cost and minutes from length, water/rail access, and nearest depot;
+    use material medians / 60 km location fallback with explicit labels.
+  - Integrate into score output and reasons; test length, crossing, distance,
+    and missing coordinates.
+  - _Requirements: 5.5, 5.6, 5.9_

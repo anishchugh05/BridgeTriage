@@ -16,8 +16,9 @@ Mapping applied here:
 - ``rebuilt``           passed through; fit_decline excludes a start->end pair
                         when the END year's rebuilt flag is True.
 - ``improvement_cost``  deliberately NOT mapped to ``insp_cost`` — it is a
-                        repair cost, not an inspection cost. score.py falls
-                        back to its placeholder inspection cost.
+                        repair cost, not an inspection cost. score.py uses the
+                        estimated drone-flight cost when no real inspection
+                        cost exists.
 - ``insp_date``         not in the panel yet. If Part A adds it later, it is
                         picked up automatically; otherwise score.py falls back
                         to ``insp_freq_mo``.

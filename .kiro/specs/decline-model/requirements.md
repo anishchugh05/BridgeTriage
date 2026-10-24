@@ -78,40 +78,59 @@ trains on, so the backtest measures the same event.
 4. `validate.py` SHALL run 5-fold cross-validation **grouped by bridge id** and
    report mean ± std of AUC and log loss for: grouped, logistic without
    `months_since_insp`, logistic with `months_since_insp`, and the per-condition
-   baseline.
+   baseline. It SHALL also print a five-quantile-bin calibration table for the
+   selected model using out-of-fold predictions (mean predicted vs actual).
 5. `select_model` SHALL pick by mean CV AUC, preferring the simpler model
    unless a more complex one wins by more than one standard deviation.
    Complexity order: baseline < grouped < logistic(no msi) < logistic(+ msi).
-6. A horizon drop probability SHALL convert to a per-month hazard via
-   `h = -ln(1 - p) / horizon_months` so inspection recency modulates `p_worse`.
+6. A grouped-model horizon probability SHALL convert to a per-month hazard
+   via `h = -ln(1 - p) / horizon_months` and apply over inspection recency +
+   12 months. A logistic-model probability SHALL instead scale directly to a
+   12-month horizon via `1 - (1-p)^(12/horizon_months)`, without hazard
+   re-application.
 
 ### Requirement 5 — Score each bridge
 
 #### Acceptance criteria
-1. `p_worse` SHALL equal `1 - exp(-hazard × (months since insp_date + 12))`.
+1. For a logistic model, `p_worse` SHALL equal
+   `1 - (1-p)^(12/horizon_months)` with no recency hazard re-application.
+   For the grouped model, it SHALL retain the hazard path over
+   `months_since_insp + 12`.
 2. WHEN `insp_date` is missing THEN months SHALL fall back to `insp_freq_mo`,
-   else a 24-month default — NEVER a long-ago assumption that inflates rank —
-   and the reason SHALL include "inspection date unknown".
+   else a 24-month default, and the reason SHALL include "inspection date
+   unknown".
 3. `consequence` SHALL derive from `log(1 + ADT)`, multiplied for rail or water
    crossings and given extra weight when condition ≤ 5.
 4. Rail/water crossing detection SHALL use word boundaries, so "RR" does not
    match inside words like CHERRY or TERRACE, while "RR", "BMRR", "RAILROAD",
    "RAILWAY", and "MBTA" do match.
-5. `insp_cost` SHALL come from the column when present, otherwise a placeholder
-   based on the underwater and fracture-critical flags.
-6. `score` SHALL equal `p_worse × consequence / insp_cost`.
-7. Every row SHALL carry a non-empty one-line `reason`, and the reason SHALL
-   note when a placeholder cost was used.
-8. `score` SHALL return exactly the columns `id, p_worse, consequence,
-   insp_cost, score, reason` with no NaN values.
+5. `insp_cost` SHALL come from the column when a positive real value is
+   present. Otherwise it SHALL use `flight_cost(row)`: $1,500 base + $8 per
+   meter, ×1.4 for water/rail access, plus $2 per one-way kilometer from the
+   nearest Boston/Worcester/Springfield depot. Missing coordinates use 60 km;
+   missing length uses a material median and is labeled "length estimated".
+6. `flight_minutes` SHALL equal `20 + 0.5 × length_m + 2 × travel_km × 1.2`
+   (round-trip travel) and be labeled as an estimate in the reason.
+7. `consequence_norm` SHALL equal consequence divided by its cohort median;
+   `expected_drops_per_10k` SHALL equal
+   `p_worse × consequence_norm / insp_cost × 10000`.
+8. `score` SHALL equal `expected_drops_per_10k` exactly.
+9. Every row SHALL carry a non-empty one-line `reason` with the drone cost,
+   duration, nearest-depot travel, and any estimated inputs.
+10. `score` SHALL return exactly `id, p_worse, consequence, insp_cost,
+   flight_minutes, expected_drops_per_10k, score, reason`, with no NaNs; null
+   `worst_rating` rows SHALL be omitted.
 
-### Requirement 6 — Runnable before Part A, and validated
+### Requirement 6 — Runnable before Part A, validated, and batch-scored
 
 #### Acceptance criteria
 1. The module SHALL provide a synthetic panel generator producing the contract
    columns and types for years 2012–2022.
-2. A validation harness SHALL fit on 2012→2016, test on 2014→2018, and report
-   log loss and AUC against a per-condition-only baseline.
-3. The test suite SHALL cover: grade monotonicity, rebuild exclusion,
-   no-lookahead, clean score output, the missing-date fallback, and
-   word-boundary crossing detection.
+2. Validation SHALL use five folds grouped by bridge id over 2012→2016 and
+   report model metrics plus selected-model calibration.
+3. `model/run.py` SHALL select/refit on 2012→2016, score 2018 and 2022 as of
+   April 1 of each year, and write `data/processed/scores_2018.parquet` and
+   `scores_2022.parquet`.
+4. The test suite SHALL cover the target, rebuild/no-lookahead rules, both
+   horizon-conversion paths, normalized score formula, calibration bins,
+   missing-date/crossing handling, and batch output.

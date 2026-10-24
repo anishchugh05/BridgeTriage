@@ -3,19 +3,19 @@
 Implements the two contract functions:
 
 - ``fit_decline(panel, start, end)`` learns, per (material, age band, condition)
-  group, the probability that a bridge drops at least one condition grade over
-  the ``start`` -> ``end`` interval, and converts that into a monthly hazard.
-- ``score(table, rates, asof)`` turns those hazards into a per-bridge
-  ``p_worse``, combines it with a traffic/crossing consequence and an
-  inspection cost, and returns the scored table defined in
+  group, the probability of the shared safety-drop target over the
+  ``start`` -> ``end`` interval.
+- ``score(table, rates, asof)`` turns a fitted grouped/logistic probability into
+  ``p_worse``, combines it with consequence and the drone-flight inspection
+  estimate, and returns the scored table defined in
   ``.kiro/steering/contract.md``.
 
 Rules honored here (see product.md / contract.md):
 - No lookahead: ``fit_decline`` reads only rows in years ``start`` and ``end``.
 - NBI "N" is not-applicable: it arrives as NaN and is treated as missing, never
   as a rating of 0.
-- Every scored row carries a one-line ``reason``; when ``insp_cost`` is missing
-  a placeholder is used and the reason says so.
+- Every scored row carries a one-line ``reason`` with its estimated drone
+  flight cost, duration, travel, and any estimated inputs.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .flight_cost import LENGTH_COLUMNS, flight_cost
 from .materials import material_name
 from .target import is_safety_drop_series
 
@@ -44,13 +45,6 @@ AGE_BAND_LABELS = ["0-24", "25-49", "50-74", "75+"]
 # Shrinkage: an effective sample size controlling how fast a small group's
 # estimate is pulled toward its coarser parent group.
 SHRINKAGE_K = 20.0
-
-# Placeholder inspection costs (USD) by inspection difficulty, used only when
-# the panel's insp_cost is missing. These are estimates, not quotes.
-COST_BASE = 3_000.0
-COST_UNDERWATER = 8_000.0
-COST_FRACTURE_CRITICAL = 6_000.0
-COST_UNDERWATER_AND_FC = 12_000.0
 
 # Consequence shaping.
 CONSEQUENCE_RAIL_MULT = 1.5
@@ -88,7 +82,16 @@ WATER_PATTERN = re.compile(
     r"\b(?:RIV|RIVER|CREEK|BROOK|STREAM|WATER|BAY|POND|LAKE|CANAL|HARBOR)\b"
 )
 
-OUTPUT_COLUMNS = ["id", "p_worse", "consequence", "insp_cost", "score", "reason"]
+OUTPUT_COLUMNS = [
+    "id",
+    "p_worse",
+    "consequence",
+    "insp_cost",
+    "flight_minutes",
+    "expected_drops_per_10k",
+    "score",
+    "reason",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -130,19 +133,36 @@ class DeclineRates:
                 return self.group_prob[key]
         return self.global_prob
 
-    def interval_prob(self, rec: dict) -> float:
+    def interval_prob(self, rec: dict, asof=None) -> float:
         """Horizon drop probability for a scored row ``rec``."""
         condition = _condition(rec)
         material = rec.get("material")
         yb = rec.get("year_built")
-        year = rec.get("year")
-        if not _isnan(yb) and not _isnan(year):
-            age = float(year) - float(yb)
+        if not _isnan(yb) and asof is not None:
+            age = pd.Timestamp(asof).year - float(yb)
         elif not _isnan(rec.get("age")):
             age = float(rec.get("age"))
+        elif not _isnan(yb) and not _isnan(rec.get("year")):
+            age = float(rec.get("year")) - float(yb)
         else:
             age = np.nan
         return self.prob_for(material, _age_band(age), condition)
+
+
+@dataclass
+class ConditionBaseline:
+    """Per-condition empirical safety-drop model used by CV and selection."""
+
+    per_condition: Dict[int, float]
+    global_prob: float
+    horizon_months: float
+    name: str = "baseline"
+
+    def interval_prob(self, rec: dict, asof=None) -> float:
+        condition = _condition(rec)
+        if _isnan(condition):
+            return self.global_prob
+        return self.per_condition.get(int(round(condition)), self.global_prob)
 
 
 # --------------------------------------------------------------------------- #
@@ -158,9 +178,11 @@ def _condition(row_like) -> float:
     falls back to min(deck, super, sub), then culvert. NaN means
     not-applicable and is skipped; returns NaN only when everything is missing.
     """
-    worst = row_like.get("worst_rating")
-    if worst is not None and not _isnan(worst):
-        return float(worst)
+    if "worst_rating" in row_like:
+        worst = row_like.get("worst_rating")
+        # In Part A's published panel, null worst_rating explicitly means the
+        # condition is not applicable. Do not reconstruct it from components.
+        return float(worst) if not _isnan(worst) else float("nan")
     vals = [row_like.get(c) for c in CONDITION_COLS]
     vals = [v for v in vals if v is not None and not _isnan(v)]
     if vals:
@@ -178,6 +200,10 @@ def _condition_series(df: pd.DataFrame) -> pd.Series:
     then culvert. A null ``worst_rating`` is not-applicable and is skipped (the
     bridge gets NaN unless the fallbacks supply a value).
     """
+    if "worst_rating" in df.columns:
+        # Null is an explicit not-applicable value in Part A's panel; callers
+        # skip it rather than filling it from component ratings.
+        return pd.to_numeric(df["worst_rating"], errors="coerce")
     primary_cols = [c for c in CONDITION_COLS if c in df.columns]
     if primary_cols:
         primary = df[primary_cols].min(axis=1, skipna=True)
@@ -185,8 +211,6 @@ def _condition_series(df: pd.DataFrame) -> pd.Series:
         primary = pd.Series(np.nan, index=df.index)
     if CULVERT_COL in df.columns:
         primary = primary.where(primary.notna(), df[CULVERT_COL])
-    if "worst_rating" in df.columns:
-        return df["worst_rating"].where(df["worst_rating"].notna(), primary)
     return primary
 
 
@@ -316,9 +340,32 @@ def _build_pairs(panel: pd.DataFrame, start: int, end: int) -> pd.DataFrame:
     return pd.DataFrame.from_records(records)
 
 
+def fit_condition_baseline(panel: pd.DataFrame, start: int, end: int) -> ConditionBaseline:
+    """Fit the condition-only comparison model on a four-year interval."""
+    _validate_fit_interval(start, end)
+    pairs = _build_pairs(panel, start, end)
+    if pairs.empty:
+        return ConditionBaseline({}, 0.1, (end - start) * 12.0)
+    per = pairs.groupby("cond")["dropped"].mean().to_dict()
+    return ConditionBaseline(
+        per_condition={int(k): float(v) for k, v in per.items()},
+        global_prob=float(pairs["dropped"].mean()),
+        horizon_months=(end - start) * 12.0,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # fit_decline
 # --------------------------------------------------------------------------- #
+
+
+def _validate_fit_interval(start: int, end: int) -> None:
+    """Require the four-year horizon shared by training and backtesting."""
+    if end - start != 4:
+        raise ValueError(
+            f"fit interval must be exactly 4 years; got {start}->{end}. "
+            "The 2016->2018 two-year gap must never be fit."
+        )
 
 
 def fit_decline(panel: pd.DataFrame, start: int, end: int) -> DeclineRates:
@@ -331,8 +378,7 @@ def fit_decline(panel: pd.DataFrame, start: int, end: int) -> DeclineRates:
 
     No row from any year other than ``start`` or ``end`` is read.
     """
-    if end <= start:
-        raise ValueError(f"end ({end}) must be after start ({start})")
+    _validate_fit_interval(start, end)
 
     interval_months = (end - start) * 12.0
     paired = _build_pairs(panel, start, end)
@@ -400,6 +446,7 @@ class LogisticModel:
     age_median: float
     use_months_since_insp: bool = True
     feature_names: list = field(default_factory=list)
+    constant_prob: Optional[float] = None
     name: str = "logistic"
 
     def _row_matrix(self, df: pd.DataFrame) -> np.ndarray:
@@ -451,9 +498,8 @@ class LogisticModel:
     def _row_from_rec(self, rec: dict, asof: pd.Timestamp) -> pd.DataFrame:
         cond = _condition(rec)
         yb = rec.get("year_built")
-        year = rec.get("year")
-        if not _isnan(yb) and not _isnan(year):
-            age = float(year) - float(yb)
+        if not _isnan(yb):
+            age = pd.Timestamp(asof).year - float(yb)
         elif not _isnan(rec.get("age")):
             age = float(rec.get("age"))
         else:
@@ -482,16 +528,22 @@ class LogisticModel:
         """
         if asof is None:
             asof = _snapshot_date(rec.get("year")) or pd.Timestamp.now()
+        if self.constant_prob is not None:
+            return float(self.constant_prob)
         X = self._row_matrix(self._row_from_rec(rec, pd.Timestamp(asof)))
         return float(self.clf.predict_proba(X)[0, 1])
 
     def interval_prob_frame(self, df: pd.DataFrame) -> np.ndarray:
         """Vectorized horizon probabilities for a pairs frame (for validate)."""
+        if self.constant_prob is not None:
+            return np.full(len(df), self.constant_prob, dtype=float)
         X = self._row_matrix(df)
         return self.clf.predict_proba(X)[:, 1]
 
     def coefficients(self) -> pd.Series:
         """Fitted coefficients indexed by feature name, sorted by |value|."""
+        if self.constant_prob is not None:
+            return pd.Series(0.0, index=self.feature_names)
         coefs = pd.Series(self.clf.coef_[0], index=self.feature_names)
         return coefs.reindex(coefs.abs().sort_values(ascending=False).index)
 
@@ -507,6 +559,7 @@ def fit_logistic(panel: pd.DataFrame, start: int, end: int,
     """
     from sklearn.linear_model import LogisticRegression
 
+    _validate_fit_interval(start, end)
     if train_ids is not None:
         panel = panel[panel["id"].isin(train_ids)]
     pairs = _build_pairs(panel, start, end)
@@ -523,6 +576,12 @@ def fit_logistic(panel: pd.DataFrame, start: int, end: int,
     model.feature_names = model._build_feature_names()
     X = model._row_matrix(pairs)
     y = pairs["dropped"].to_numpy()
+    if np.unique(y).size < 2:
+        # Small CV folds/subsets can contain one class. A constant empirical
+        # probability keeps validation and scoring defined instead of letting
+        # sklearn abort the entire comparison.
+        model.constant_prob = float(np.clip(y.mean(), 1e-9, 1 - 1e-9))
+        return model
     clf = LogisticRegression(max_iter=1000, C=1.0)
     clf.fit(X, y)
     model.clf = clf
@@ -570,16 +629,6 @@ def months_since_insp(insp_date, ref: pd.Timestamp, insp_freq_mo=None):
     return _months_since(insp_date, ref, insp_freq_mo)
 
 
-def _placeholder_cost(underwater: bool, fracture_critical: bool) -> float:
-    if underwater and fracture_critical:
-        return COST_UNDERWATER_AND_FC
-    if underwater:
-        return COST_UNDERWATER
-    if fracture_critical:
-        return COST_FRACTURE_CRITICAL
-    return COST_BASE
-
-
 def _crossing_flags(crosses) -> Tuple[bool, bool]:
     """Return (crosses_rail, crosses_water) from the free-text crosses field.
 
@@ -597,19 +646,48 @@ def _crossing_flags(crosses) -> Tuple[bool, bool]:
 def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
     """Score each bridge as of ``asof``. See contract.md for the output schema.
 
-    ``rates`` is any fitted model exposing ``interval_prob(rec)`` and
-    ``horizon_months`` — the grouped :class:`DeclineRates` or a
-    :class:`LogisticModel`. validate.py selects whichever has the better test
-    AUC. Returns exactly: id, p_worse, consequence, insp_cost, score, reason.
+    ``rates`` is a fitted grouped :class:`DeclineRates` or
+    :class:`LogisticModel`. Logistic probabilities are scaled directly from
+    the fit horizon to 12 months; only the grouped model uses the recency-based
+    hazard path. Returns exactly: id, p_worse, consequence, insp_cost,
+    flight_minutes, expected_drops_per_10k, score, reason.
     """
     asof = pd.Timestamp(asof)
     has_cost_col = "insp_cost" in table.columns
     horizon = float(getattr(rates, "horizon_months", 48.0)) or 48.0
 
+    # If Part A adds a partially populated length column, use each material's
+    # observed median for missing rows. flight_cost() supplies explicit
+    # material-level planning medians when no usable panel length exists.
+    length_column = next((c for c in LENGTH_COLUMNS if c in table.columns), None)
+    material_length_medians = {}
+    if length_column is not None and "material" in table.columns:
+        lengths = pd.to_numeric(table[length_column], errors="coerce")
+        valid = lengths.notna() & np.isfinite(lengths) & (lengths > 0)
+        if valid.any():
+            material_length_medians = (
+                pd.DataFrame(
+                    {
+                        "material": table.loc[valid, "material"],
+                        "length_m": lengths.loc[valid],
+                    }
+                )
+                .groupby("material")["length_m"]
+                .median()
+                .to_dict()
+            )
+
     out = []
     for _, row in table.iterrows():
         rec = row.to_dict()
         condition = _condition(rec)
+        # Part A defines null worst_rating as not applicable. Such rows cannot
+        # be trained or ranked against numeric-condition bridges.
+        if _isnan(condition):
+            continue
+        material_median = material_length_medians.get(rec.get("material"))
+        if material_median is not None:
+            rec["_material_median_length_m"] = float(material_median)
 
         # --- p_worse --------------------------------------------------------
         yb = rec.get("year_built")
@@ -626,18 +704,27 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
         # Make the feature available to any model that reads it from the record.
         rec["months_since_insp"] = months_since
 
-        # The model gives P(safety drop) over its fit horizon. Convert to a
-        # monthly hazard and re-apply over this bridge's risk window so that
-        # time since the last inspection still modulates the probability.
-        try:
-            p_horizon = float(rates.interval_prob(rec, asof=asof))
-        except TypeError:
-            p_horizon = float(rates.interval_prob(rec))
+        # Both models give P(safety drop) over their fit horizon.
+        p_horizon = float(rates.interval_prob(rec, asof=asof))
         p_horizon = float(np.clip(p_horizon, 1e-9, 1 - 1e-9))
-        hazard = _prob_to_monthly_hazard(p_horizon, horizon)
 
-        months = months_since + LOOKAHEAD_MONTHS
-        p_worse = 1.0 - np.exp(-hazard * months)
+        if isinstance(rates, (LogisticModel, ConditionBaseline)):
+            # Logistic models already include months_since_insp in their design
+            # when selected with that feature. Baseline also has no recency
+            # hazard. Scale the fitted horizon probability directly to 12 mo.
+            risk_window = 12.0
+            p_worse = 1.0 - (1.0 - p_horizon) ** (risk_window / horizon)
+        elif isinstance(rates, DeclineRates):
+            # The grouped model has no months-since-inspection feature, so keep
+            # the original constant-hazard recency path.
+            hazard = _prob_to_monthly_hazard(p_horizon, horizon)
+            risk_window = months_since + LOOKAHEAD_MONTHS
+            p_worse = 1.0 - np.exp(-hazard * risk_window)
+        else:
+            raise TypeError(
+                "rates must be a fitted DeclineRates, LogisticModel, or "
+                "ConditionBaseline"
+            )
         p_worse = float(np.clip(p_worse, 0.0, 1.0))
 
         # --- consequence ----------------------------------------------------
@@ -657,31 +744,27 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
             consequence *= CONSEQUENCE_POOR_MULT
         consequence = float(consequence)
 
-        # --- inspection cost ------------------------------------------------
-        underwater = bool(rec.get("underwater", False)) and not _isnan(
-            rec.get("underwater", False)
-        )
-        fc = bool(rec.get("fracture_critical", False)) and not _isnan(
-            rec.get("fracture_critical", False)
-        )
+        # --- inspection cost / flight duration -----------------------------
+        estimated_cost, flight_minutes, flight_reason = flight_cost(rec)
         raw_cost = rec.get("insp_cost") if has_cost_col else None
-        used_placeholder = raw_cost is None or _isnan(raw_cost)
-        if used_placeholder:
-            insp_cost = _placeholder_cost(underwater, fc)
-        else:
-            insp_cost = float(raw_cost)
-        if insp_cost <= 0:
-            insp_cost = COST_BASE
-            used_placeholder = True
-
-        # --- score ----------------------------------------------------------
-        score_val = float(p_worse * consequence / insp_cost)
+        has_real_cost = (
+            raw_cost is not None
+            and not _isnan(raw_cost)
+            and np.isfinite(float(raw_cost))
+            and float(raw_cost) > 0
+        )
+        insp_cost = float(raw_cost) if has_real_cost else estimated_cost
 
         # --- reason ---------------------------------------------------------
-        cond_txt = "cond N/A" if _isnan(condition) else f"cond {int(round(condition))}"
+        cond_txt = f"cond {int(round(condition))}"
         age_txt = "age ?" if _isnan(age) else f"{int(age)}y"
         mat_txt = material_name(material)
-        bits = [f"{mat_txt}, {age_txt}, {cond_txt}", f"{months:.0f} mo risk window"]
+        window_txt = (
+            f"{risk_window:.0f} mo risk window"
+            if isinstance(rates, DeclineRates)
+            else "12 mo forecast"
+        )
+        bits = [f"{mat_txt}, {age_txt}, {cond_txt}", window_txt]
         crossing_bits = []
         if rail:
             crossing_bits.append("rail")
@@ -698,8 +781,9 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
                 f"inspection date unknown (assumed {months_since:.0f} mo)"
             )
         bits.append(f"p_worse {p_worse:.2f}")
-        if used_placeholder:
-            bits.append(f"placeholder cost ${insp_cost:,.0f}")
+        bits.append(flight_reason)
+        if has_real_cost:
+            bits.append(f"provided inspection cost ${insp_cost:,.0f} used")
         reason = "; ".join(bits)
 
         out.append(
@@ -708,10 +792,26 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
                 "p_worse": p_worse,
                 "consequence": consequence,
                 "insp_cost": insp_cost,
-                "score": score_val,
+                "flight_minutes": flight_minutes,
+                "expected_drops_per_10k": np.nan,
+                "score": np.nan,
                 "reason": reason,
             }
         )
 
-    result = pd.DataFrame(out, columns=OUTPUT_COLUMNS)
-    return result
+    result = pd.DataFrame(out)
+    if result.empty:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+
+    # Normalize consequence within this scored cohort so the metric has a
+    # stable interpretation: expected consequence-weighted drops per $10k.
+    consequence_median = float(result["consequence"].median())
+    if not np.isfinite(consequence_median) or consequence_median <= 0:
+        consequence_median = 1.0
+    consequence_norm = result["consequence"] / consequence_median
+    expected = (
+        result["p_worse"] * consequence_norm / result["insp_cost"] * 10_000.0
+    )
+    result["expected_drops_per_10k"] = expected.astype(float)
+    result["score"] = result["expected_drops_per_10k"]
+    return result[OUTPUT_COLUMNS]

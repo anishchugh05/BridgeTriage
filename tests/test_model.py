@@ -147,7 +147,8 @@ def test_score_output_clean(panel, rates):
     scored = score(table, rates, asof="2018-06-01")
 
     assert list(scored.columns) == [
-        "id", "p_worse", "consequence", "insp_cost", "score", "reason"
+        "id", "p_worse", "consequence", "insp_cost", "flight_minutes",
+        "expected_drops_per_10k", "score", "reason"
     ]
     assert len(scored) == len(table)
 
@@ -158,13 +159,19 @@ def test_score_output_clean(panel, rates):
     assert (scored["p_worse"] >= 0).all() and (scored["p_worse"] <= 1).all()
     assert (scored["insp_cost"] > 0).all()
     assert (scored["score"] >= 0).all()
+    assert np.allclose(scored["score"], scored["expected_drops_per_10k"])
+    consequence_norm = scored["consequence"] / scored["consequence"].median()
+    expected = (
+        scored["p_worse"] * consequence_norm / scored["insp_cost"] * 10_000
+    )
+    assert np.allclose(scored["expected_drops_per_10k"], expected)
 
     # Every reason is a non-empty string.
     assert scored["reason"].map(lambda s: isinstance(s, str) and len(s.strip()) > 0).all()
 
 
-def test_score_uses_placeholder_when_cost_missing(rates):
-    """A missing insp_cost yields a positive cost and a reason that says so."""
+def test_score_uses_drone_estimate_when_cost_missing(rates):
+    """A missing insp_cost uses a positive, explicitly labeled drone estimate."""
     row = {
         "id": "NOCOST", "year_built": 1965, "material": "Timber",
         "deck": 4.0, "super": 4.0, "sub": 5.0, "culvert": np.nan,
@@ -174,7 +181,9 @@ def test_score_uses_placeholder_when_cost_missing(rates):
     }
     scored = score(pd.DataFrame([row]), rates, asof="2018-06-01")
     assert scored.loc[0, "insp_cost"] > 0
-    assert "placeholder" in scored.loc[0, "reason"].lower()
+    assert scored.loc[0, "flight_minutes"] > 0
+    assert "drone est." in scored.loc[0, "reason"].lower()
+    assert "length estimated" in scored.loc[0, "reason"].lower()
 
 
 def test_score_handles_na_condition_culvert_fallback(rates):
@@ -315,7 +324,8 @@ def test_logistic_model_scores(panel):
     scored = score(table, logit, asof="2018-06-01")
 
     assert list(scored.columns) == [
-        "id", "p_worse", "consequence", "insp_cost", "score", "reason"
+        "id", "p_worse", "consequence", "insp_cost", "flight_minutes",
+        "expected_drops_per_10k", "score", "reason"
     ]
     assert not scored.isna().any().any()
     assert (scored["p_worse"] >= 0).all() and (scored["p_worse"] <= 1).all()
@@ -362,3 +372,115 @@ def test_logistic_coefficients_named(panel):
     # Sorted by descending magnitude.
     mags = c_with.abs().to_numpy()
     assert (mags[:-1] + 1e-12 >= mags[1:]).all()
+
+
+# --------------------------------------------------------------------------- #
+# 10. Horizon conversion and normalized scoring.
+# --------------------------------------------------------------------------- #
+
+
+def test_logistic_uses_direct_twelve_month_scaling(panel):
+    """Logistic p_worse is the horizon probability scaled to 12 months; it
+    must not be re-applied over the inspection-age risk window."""
+    logit = fit_logistic(panel, 2012, 2016, use_months_since_insp=True)
+    table = panel[panel["year"] == 2018].iloc[[0]].copy()
+    asof = pd.Timestamp("2018-04-01")
+    rec = table.iloc[0].to_dict()
+    p_horizon = logit.interval_prob(rec, asof=asof)
+    expected = 1.0 - (1.0 - p_horizon) ** (12.0 / logit.horizon_months)
+
+    scored = score(table, logit, asof=asof)
+    assert scored.iloc[0]["p_worse"] == pytest.approx(expected)
+    assert "12 mo forecast" in scored.iloc[0]["reason"]
+
+
+def test_grouped_keeps_recency_hazard_path(panel, rates):
+    """The grouped model still applies its horizon hazard over
+    months_since_insp + 12."""
+    from model.score import months_since_insp
+
+    table = panel[panel["year"] == 2018].iloc[[0]].copy()
+    asof = pd.Timestamp("2018-04-01")
+    rec = table.iloc[0].to_dict()
+    p_horizon = rates.interval_prob(rec, asof=asof)
+    months, _ = months_since_insp(
+        rec.get("insp_date"), asof, rec.get("insp_freq_mo")
+    )
+    expected = 1.0 - (1.0 - p_horizon) ** (
+        (months + 12.0) / rates.horizon_months
+    )
+
+    scored = score(table, rates, asof=asof)
+    assert scored.iloc[0]["p_worse"] == pytest.approx(expected)
+    assert "risk window" in scored.iloc[0]["reason"]
+
+
+def test_null_worst_rating_is_skipped(rates):
+    """A published-panel null worst_rating is not applicable, even if component
+    fields happen to contain numbers, and must not enter the ranking."""
+    row = {
+        "id": "NA", "year": 2018, "year_built": 1980, "material": "3",
+        "worst_rating": np.nan, "deck": 4.0, "super": 4.0, "sub": 4.0,
+        "adt": 1000, "insp_date": pd.Timestamp("2018-03-01"),
+        "insp_freq_mo": 24, "fracture_critical": False,
+        "underwater": False, "crosses": "HWY",
+    }
+    scored = score(pd.DataFrame([row]), rates, asof="2018-04-01")
+    assert scored.empty
+    assert list(scored.columns) == [
+        "id", "p_worse", "consequence", "insp_cost", "flight_minutes",
+        "expected_drops_per_10k", "score", "reason"
+    ]
+
+
+def test_forbidden_two_year_gap_is_rejected(panel):
+    with pytest.raises(ValueError, match="exactly 4 years"):
+        fit_decline(panel, 2016, 2018)
+    with pytest.raises(ValueError, match="exactly 4 years"):
+        fit_logistic(panel, 2016, 2018)
+
+
+# --------------------------------------------------------------------------- #
+# 11. Cross-validation calibration and batch runner.
+# --------------------------------------------------------------------------- #
+
+
+def test_calibration_table_has_five_quantile_bins():
+    from model.validate import calibration_table
+
+    oof = pd.DataFrame({
+        "actual": ([0, 0, 0, 1, 0] * 20),
+        "logistic_msi": np.linspace(0.001, 0.5, 100),
+    })
+    table = calibration_table(oof, "logistic_msi", n_bins=5)
+    assert list(table.columns) == [
+        "bin", "n", "mean_predicted", "actual_drop_rate"
+    ]
+    assert table["bin"].tolist() == [1, 2, 3, 4, 5]
+    assert table["n"].sum() == len(oof)
+    assert table["mean_predicted"].is_monotonic_increasing
+
+
+def test_batch_run_writes_both_score_files(tmp_path, panel, rates, monkeypatch):
+    import model.run as batch
+
+    panel_path = tmp_path / "panel.parquet"
+    output = tmp_path / "processed"
+    panel.to_parquet(panel_path, index=False)
+    monkeypatch.setattr(
+        batch,
+        "select_model",
+        lambda *args, **kwargs: (rates, "grouped", {}),
+    )
+
+    result = batch.run(panel_path=panel_path, output_dir=output)
+    assert result["model"] == "grouped"
+    for year in (2018, 2022):
+        path = output / f"scores_{year}.parquet"
+        assert path.exists()
+        scored = pd.read_parquet(path)
+        assert "expected_drops_per_10k" in scored.columns
+        assert "flight_minutes" in scored.columns
+        assert (scored["flight_minutes"] > 0).all()
+        assert scored["reason"].str.contains("drone est.", regex=False).all()
+        assert np.allclose(scored["score"], scored["expected_drops_per_10k"])

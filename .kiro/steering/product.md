@@ -17,7 +17,9 @@ It ranks every bridge by **risk reduction per dollar** and picks the top N.
 For each bridge we compute:
 
 ```
-score = p_worse * consequence / insp_cost
+consequence_norm = consequence / median(consequence)
+score = expected_drops_per_10k
+      = p_worse * consequence_norm / insp_cost * 10,000
 ```
 
 - **p_worse** — probability the bridge is *worse now than its last recorded
@@ -25,8 +27,10 @@ score = p_worse * consequence / insp_cost
   inspection, and decline rates the model learns from history.
 - **consequence** — how much it matters if this bridge fails: traffic volume
   (ADT), and whether it crosses rail or water.
-- **insp_cost** — estimated cost of the extra inspection. Dividing by it turns
-  the ranking into "most risk reduction per dollar," not just "most risky."
+- **insp_cost** — estimated drone-flight inspection cost when no real
+  inspection price exists: base + structure length + water/rail access + depot
+  travel. Dividing by it turns the ranking into "most risk reduction per
+  dollar," not just "most risky."
 
 We pick the N bridges with the highest score.
 
@@ -57,5 +61,6 @@ backtest:
 - **Every score carries a one-line reason.** No bridge gets ranked without a
   short human-readable explanation of why (e.g. "old timber, ADT 18k, 54 mo
   since last inspection").
-- **Costs are estimates.** `insp_cost` is a modeled estimate, not a quoted
-  price. Label it that way anywhere it surfaces to a user.
+- **Costs and flight times are estimates.** `insp_cost` and `flight_minutes`
+  are planning estimates, not vendor quotes. Label them as estimates anywhere
+  they surface to a user.

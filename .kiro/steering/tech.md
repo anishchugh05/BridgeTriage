@@ -28,10 +28,10 @@ pip install -r requirements.txt
 
 - FHWA National Bridge Inventory, delimited Massachusetts files:
   `https://www.fhwa.dot.gov/bridge/nbi/<year>/delimited/MA<yy>.txt`
-- `fetch_years.py` downloads the biennial years 2012, 2014, 2016, 2018, 2020,
-  2022 into `data/` and matches NBI columns by **item-number suffix** (e.g.
-  `_008` for structure id) so minor naming differences across years don't break
-  ingestion.
+- `model.load_panel()` reads Part A's published `bridges/panel.parquet`, whose
+  years are 2012, 2016, 2018, and 2022. Modeling uses only the matched
+  four-year intervals 2012→2016 and 2018→2022; the two-year 2016→2018 gap is
+  forbidden.
 - Raw files are read with `dtype=str, encoding="latin-1"` — NBI is fixed-schema
   latin-1 text; keep everything as strings until explicitly parsed so `"N"` and
   blanks survive.
