@@ -9,7 +9,10 @@ Public API (see .kiro/steering/contract.md):
     score(table, model, asof)          -> DataFrame[id, p_worse, consequence,
                                                      insp_cost, flight_minutes,
                                                      expected_drops_per_10k,
-                                                     score, reason]
+                                                     score, voi, decision,
+                                                     reason, reason_human]
+    add_voi(scored)                     -> scored + voi/decision columns
+    simulate_flight(scored_row, outcome)-> (updated_p_worse, updated_insp_date)
 """
 
 from .data import FOUR_YEAR_PAIRS, load_panel
@@ -26,6 +29,14 @@ from .score import (
     score,
 )
 from .target import is_safety_drop, is_safety_drop_series
+from .voi import (
+    DECISION_LABELS,
+    FIX_TRACK_THRESHOLD,
+    FLY_TOP_FRACTION,
+    add_voi,
+    compute_voi,
+    simulate_flight,
+)
 
 __all__ = [
     "fit_decline",
@@ -43,4 +54,10 @@ __all__ = [
     "flight_cost",
     "material_name",
     "MATERIAL_NAMES",
+    "add_voi",
+    "compute_voi",
+    "simulate_flight",
+    "DECISION_LABELS",
+    "FIX_TRACK_THRESHOLD",
+    "FLY_TOP_FRACTION",
 ]

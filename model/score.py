@@ -30,6 +30,7 @@ import pandas as pd
 from .flight_cost import LENGTH_COLUMNS, flight_cost
 from .materials import material_name
 from .target import is_safety_drop_series
+from .voi import add_voi
 
 # --------------------------------------------------------------------------- #
 # Constants / knobs
@@ -90,7 +91,10 @@ OUTPUT_COLUMNS = [
     "flight_minutes",
     "expected_drops_per_10k",
     "score",
+    "voi",
+    "decision",
     "reason",
+    "reason_human",
 ]
 
 
@@ -629,6 +633,52 @@ def months_since_insp(insp_date, ref: pd.Timestamp, insp_freq_mo=None):
     return _months_since(insp_date, ref, insp_freq_mo)
 
 
+def _human_reason(*, material, age, condition, rail, water, months_since,
+                  date_known, p_worse, insp_cost, flight_minutes,
+                  has_real_cost) -> str:
+    """Plain-English explanation of a score, for a non-technical reader.
+
+    Mirrors the technical ``reason`` but in full sentences a planner or the
+    public could read. Kept alongside (not replacing) the technical string.
+    """
+    mat = material_name(material)
+    age_phrase = "" if _isnan(age) else f", built about {int(age)} years ago"
+    grade = int(round(condition))
+    chance = int(round(p_worse * 100))
+
+    crossing = ""
+    if rail and water:
+        crossing = " It spans both water and a rail line, which complicate access."
+    elif water:
+        crossing = " It crosses water, which complicates access."
+    elif rail:
+        crossing = " It crosses a rail line, which complicates access."
+
+    if date_known:
+        recency = f"It was last inspected about {months_since:.0f} months ago."
+    else:
+        recency = (
+            "We don't have its last inspection date, so we assumed a typical "
+            f"{months_since:.0f}-month gap."
+        )
+
+    cost_phrase = (
+        f"A real inspection cost of ${insp_cost:,.0f} was on file."
+        if has_real_cost
+        else (
+            f"We estimate a drone flight would cost about ${insp_cost:,.0f} "
+            f"and take roughly {flight_minutes:.0f} minutes."
+        )
+    )
+
+    return (
+        f"This {mat.lower()} bridge{age_phrase} is currently rated {grade} "
+        f"out of 9. We estimate about a {chance}% chance it has quietly slipped "
+        f"into poor condition. {recency}{crossing} {cost_phrase} "
+        "All figures are planning estimates, not official measurements."
+    )
+
+
 def _crossing_flags(crosses) -> Tuple[bool, bool]:
     """Return (crosses_rail, crosses_water) from the free-text crosses field.
 
@@ -650,7 +700,8 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
     :class:`LogisticModel`. Logistic probabilities are scaled directly from
     the fit horizon to 12 months; only the grouped model uses the recency-based
     hazard path. Returns exactly: id, p_worse, consequence, insp_cost,
-    flight_minutes, expected_drops_per_10k, score, reason.
+    flight_minutes, expected_drops_per_10k, score, voi, decision, reason,
+    reason_human.
     """
     asof = pd.Timestamp(asof)
     has_cost_col = "insp_cost" in table.columns
@@ -786,6 +837,21 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
             bits.append(f"provided inspection cost ${insp_cost:,.0f} used")
         reason = "; ".join(bits)
 
+        # --- plain-language reason (for non-technical readers) --------------
+        reason_human = _human_reason(
+            material=material,
+            age=age,
+            condition=condition,
+            rail=rail,
+            water=water,
+            months_since=months_since,
+            date_known=date_known,
+            p_worse=p_worse,
+            insp_cost=insp_cost,
+            flight_minutes=flight_minutes,
+            has_real_cost=has_real_cost,
+        )
+
         out.append(
             {
                 "id": rec.get("id"),
@@ -796,6 +862,7 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
                 "expected_drops_per_10k": np.nan,
                 "score": np.nan,
                 "reason": reason,
+                "reason_human": reason_human,
             }
         )
 
@@ -814,4 +881,9 @@ def score(table: pd.DataFrame, rates, asof) -> pd.DataFrame:
     )
     result["expected_drops_per_10k"] = expected.astype(float)
     result["score"] = result["expected_drops_per_10k"]
+
+    # Value-of-information layer: voi + decision columns, and a one-line
+    # decision rationale appended to each reason. Cohort-relative (top-20%
+    # VOI defines the "fly" tier), so it runs as a post-pass over the frame.
+    result = add_voi(result)
     return result[OUTPUT_COLUMNS]
