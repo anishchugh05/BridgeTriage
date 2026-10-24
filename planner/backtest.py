@@ -842,9 +842,102 @@ def run_backtest(df_2018, df_2022, county_fee,
     return result
 
 # ---------------------------------------------------------------------------
-# Algorithm 8: plot (R12) — headline figures. bootstrap_gap_ci (R12.2) is
-# task 10; it wires into _plot_metric, nothing here computes CIs yet.
+# Algorithm 8: plot (R12) — headline figures, with bootstrap_gap_ci (R12.2)
+# providing per-method gap-CI error bars, drawn by _plot_metric.
 # ---------------------------------------------------------------------------
+
+def bootstrap_gap_ci(selections, outcomes, adt, metric):
+    """Bootstrap 95% CI on each method's metric gap vs worst_first (R12.2).
+
+    selections: method -> {budget: selected_ids}, the selected_ids from the
+      actual run — FIXED throughout, never re-picked. Must include
+      "worst_first" (every gap is computed against it at the SAME budget).
+    outcomes: pool outcomes dict from apply_exclusion_and_label (the fixed
+      shared pool, R11.2). adt: structure_id -> adt; evaluation weights are
+      log1p(adt), never score (R10.3). metric: "recall" (Fig 1) or
+      "weighted_recall" (Fig 2) (R10.1).
+
+    Per replicate (BOOTSTRAP_REPS = 1000, rng = default_rng(BOOTSTRAP_SEED)):
+        w = rng.multinomial(n_pool, uniform)  # weights over pool row indices
+        numerator AND denominator recomputed as w-weighted sums:
+            recall          = sum_i w_i * 1[i selected] * worse_i
+                              / sum_i w_i * worse_i
+            weighted_recall = sum_i w_i * 1[i selected] * worse_i * log1p(adt_i)
+                              / sum_i w_i * worse_i * log1p(adt_i)
+        (a replicate with denominator 0 contributes 0.0, matching
+        evaluate_metrics), then
+            gap = method_metric - worst_first_metric
+        under the SAME w (paired replicates). The CI is the 2.5/97.5
+        percentile band of the per-replicate gaps; worst_first's gap vs
+        itself is exactly (0, 0).
+
+    Returns {method: {budget: (lo, hi)}} for every method in selections.
+
+    Because selections stay fixed, these CIs capture outcome-sampling
+    variance only, not selection variance (R12.3) — any report of them must
+    state that.
+    """
+    if metric not in ("recall", "weighted_recall"):
+        raise ValueError(
+            'bootstrap_gap_ci: metric must be "recall" or '
+            f'"weighted_recall", got {metric!r}'
+        )
+    if "worst_first" not in selections:
+        raise ValueError(
+            "bootstrap_gap_ci: selections must include 'worst_first' "
+            "(gaps are vs worst_first, R12.2)"
+        )
+
+    pool_ids = np.array(list(outcomes))          # fixed pool row order (R11.2)
+    n_pool = len(pool_ids)
+    worse = np.array(
+        [outcomes[sid]["worse"] for sid in pool_ids], dtype=float
+    )
+    log_adt = np.array(
+        [float(np.log1p(adt[sid])) for sid in pool_ids], dtype=float
+    )
+    # Per-row denominator contributions before the replicate weights apply;
+    # numerators are the same rows masked down to each selection.
+    denom_rows = worse if metric == "recall" else worse * log_adt
+
+    # One selected-row mask per (method, budget), in insertion order.
+    pairs = [
+        (method, budget)
+        for method, per_budget in selections.items()
+        for budget in per_budget
+    ]
+    sel_matrix = np.array(
+        [np.isin(pool_ids, list(selections[method][budget]))
+         for method, budget in pairs],
+        dtype=float,
+    )
+
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    uniform = np.full(n_pool, 1.0 / n_pool)
+    gaps = np.empty((len(pairs), BOOTSTRAP_REPS))
+    for rep in range(BOOTSTRAP_REPS):
+        w = rng.multinomial(n_pool, uniform)
+        contrib = w * denom_rows
+        denom = contrib.sum()
+        values = (
+            (sel_matrix @ contrib) / denom
+            if denom > 0 else np.zeros(len(pairs))
+        )
+        wf_values = {
+            budget: value
+            for (method, budget), value in zip(pairs, values)
+            if method == "worst_first"
+        }
+        gaps[:, rep] = [
+            value - wf_values[budget]
+            for (method, budget), value in zip(pairs, values)
+        ]
+
+    result = {}
+    for (method, budget), pair_gaps in zip(pairs, gaps):
+        lo, hi = np.percentile(pair_gaps, [2.5, 97.5])
+        result.setdefault(method, {})[budget] = (float(lo), float(hi))
+    return result
 
 # Canonical legend/line order; methods outside this list keep their order of
 # appearance after these.
@@ -858,7 +951,26 @@ def _ordered_methods(results_df):
     return ordered + [m for m in present if m not in _METHOD_ORDER]
 
 
-def _plot_metric(results_df, metric, ylabel, title):
+def _reference_series(results_df, method, metric):
+    """budget -> metric value for `method`'s canonical line (R12.2 wiring).
+
+    Uses the rows _plot_metric draws for a deterministic method (single runs
+    plus tiebreak="random" MEAN rows, R11.3), preferring the tiebreak="adt"
+    line when several exist — the canonical deterministic run whose
+    selections bootstrap_gap_ci receives.
+    """
+    sub = results_df[
+        (results_df["method"] == method)
+        & (~results_df["is_aggregate"] | (results_df["stat"] == "mean"))
+    ]
+    adt_rows = sub[sub["tiebreak"] == "adt"]
+    if not adt_rows.empty:
+        sub = adt_rows
+    sub = sub.sort_values("budget")
+    return dict(zip(sub["budget"], sub[metric]))
+
+
+def _plot_metric(results_df, metric, ylabel, title, gap_ci=None):
     """Draw ONE headline figure (budget vs `metric`) and return its Figure.
 
     One line per method; oracle dashed (R12.1). random_avg is drawn from its
@@ -869,11 +981,20 @@ def _plot_metric(results_df, metric, ylabel, title):
     one line per tiebreak value, the tiebreak="random" line coming from the
     single MEAN row run_backtest reports for it (R11.3).
 
-    Task 10 seam: the bootstrap gap CIs vs worst_first (R12.2,
-    bootstrap_gap_ci; selections fixed, so outcome-sampling variance only,
-    R12.3) will be drawn HERE as per-method error bars — metric="recall" for
-    the recall figure, "weighted_recall" for the weighted figure.
+    Bootstrap gap CIs vs worst_first (R12.2, bootstrap_gap_ci) are drawn
+    when gap_ci is given: each method with a CI gets error bars on its
+    canonical line (the tiebreak="adt" line when a baseline has several),
+    the bar at budget b spanning [worst_first(b) + lo, worst_first(b) + hi]
+    on the method's own metric scale — so the bar covers the worst_first
+    line exactly when the 95% CI contains a zero gap. worst_first itself
+    gets no bar (its gap vs itself is exactly (0, 0)); random_avg keeps its
+    band instead. metric="recall" feeds Fig 1, "weighted_recall" Fig 2.
+    Because selections stay fixed, these CIs capture outcome-sampling
+    variance only, not selection variance (R12.3).
     """
+    wf_ref = None
+    if gap_ci is not None:
+        wf_ref = _reference_series(results_df, "worst_first", metric)
     fig, ax = plt.subplots(figsize=(7, 5))
     for method in _ordered_methods(results_df):
         sub = results_df[results_df["method"] == method]
@@ -899,11 +1020,32 @@ def _plot_metric(results_df, metric, ylabel, title):
             grp = grp.sort_values("budget")
             label = f"{method} (tiebreak={tb})" if multi else method
             style = {"linestyle": "--"} if method == "oracle" else {}
-            ax.plot(
-                grp["budget"].to_numpy(dtype=float),
-                grp[metric].to_numpy(dtype=float),
-                marker="o", label=label, **style,
-            )
+            budgets = grp["budget"].to_numpy(dtype=float)
+            values = grp[metric].to_numpy(dtype=float)
+            (line,) = ax.plot(budgets, values, marker="o", label=label, **style)
+            # R12.2 gap-CI error bars, shifted onto this method's metric
+            # scale by worst_first's line value (see docstring).
+            if (
+                gap_ci is not None
+                and method in gap_ci
+                and method != "worst_first"
+                and (not multi or tb == "adt")
+                and wf_ref
+            ):
+                xs, ys, below, above = [], [], [], []
+                for b, v in zip(budgets, values):
+                    if b in gap_ci[method] and b in wf_ref:
+                        lo, hi = gap_ci[method][b]
+                        xs.append(b)
+                        ys.append(v)
+                        below.append(max(v - (wf_ref[b] + lo), 0.0))
+                        above.append(max((wf_ref[b] + hi) - v, 0.0))
+                if xs:
+                    ax.errorbar(
+                        xs, ys, yerr=[below, above], fmt="none",
+                        ecolor=line.get_color(), elinewidth=1.2,
+                        capsize=3, alpha=0.7,
+                    )
     ax.set_xlabel("Budget (fraction of candidate-pool inspection cost)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -912,7 +1054,8 @@ def _plot_metric(results_df, metric, ylabel, title):
     return fig
 
 
-def plot(results_df, output_path=None):
+def plot(results_df, output_path=None, selections=None, outcomes=None,
+         adt=None):
     """Headline figures for a run_backtest result (Algorithm 8, R12).
 
     Two figures only — no precision-recall curves: the budget fixes the
@@ -928,19 +1071,35 @@ def plot(results_df, output_path=None):
     nothing is written. Returns (fig_recall, fig_weighted) either way; the
     caller owns the open figures.
 
-    The R12.2 bootstrap gap CIs vs worst_first are task 10
-    (bootstrap_gap_ci) and will be wired into both figures inside
-    _plot_metric. Because selections stay fixed, those CIs capture
+    When selections (method -> {budget: selected_ids}, as returned by pick),
+    outcomes, and adt are given, both figures also carry the R12.2
+    bootstrap gap-CI error bars vs worst_first, computed via
+    bootstrap_gap_ci with metric="recall" for Fig 1 and
+    metric="weighted_recall" for Fig 2 (selections without outcomes and adt
+    raises ValueError). Because selections stay fixed, those CIs capture
     outcome-sampling variance only, not selection variance (R12.3) — any
     report of these figures must state that.
     """
+    if selections is not None and (outcomes is None or adt is None):
+        raise ValueError(
+            "plot: selections require outcomes and adt "
+            "(bootstrap_gap_ci inputs, R12.2)"
+        )
+    ci_recall = ci_weighted = None
+    if selections is not None:
+        ci_recall = bootstrap_gap_ci(selections, outcomes, adt, "recall")
+        ci_weighted = bootstrap_gap_ci(
+            selections, outcomes, adt, "weighted_recall"
+        )
     fig_recall = _plot_metric(
         results_df, "recall", "Recall",
         "Budget vs recall (share of pool decliners caught)",
+        gap_ci=ci_recall,
     )
     fig_weighted = _plot_metric(
         results_df, "weighted_recall", "Weighted recall",
         "Budget vs weighted recall (weights: log1p(adt))",
+        gap_ci=ci_weighted,
     )
     if output_path is not None:
         fig_recall.savefig(

@@ -108,6 +108,18 @@
         "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
         "timestamp": 1792864365195
       }
+    ],
+    "10. Implement bootstrap_gap_ci and wire into plot": [
+      {
+        "executionId": "73760a20-358a-45f0-98a9-1c4bda94a4dd",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792864566934
+      },
+      {
+        "executionId": "73760a20-358a-45f0-98a9-1c4bda94a4dd",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792864814800
+      }
     ]
   }
 }
