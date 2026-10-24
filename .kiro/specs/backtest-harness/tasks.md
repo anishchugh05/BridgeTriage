@@ -47,7 +47,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R6, R7, R8, R9_
   - Demo: `python -c "import pandas as pd; from planner.backtest import score_worst_first; c=pd.DataFrame({'county':['x','x'],'inspect_cost':[1.0,1.0],'adt':[1.0,1.0],'year_built':[1950,1960],'min_2018':[3.0,7.0]},index=['a','b']); s=score_worst_first(c); assert s['a']==-3.0 and s['a']>s['b']; print('worst_first: a(-3) picked before b(-7)')"`
 
-- [ ] 7. Implement evaluation metrics
+- [x] 7. Implement evaluation metrics
   - `evaluate_metrics(selected_ids, outcomes, adt_dict)` per Algorithm 6 (R10): TP/FP, weighted TP/FP via log1p(adt), headline recall and weighted_recall
   - _Requirements: R10_
   - Demo: `python -c "from planner.backtest import evaluate_metrics, is_safety_drop; o={'a':{'worse':True,'min_2018':5,'min_2022':4},'b':{'worse':False,'min_2018':5,'min_2022':5},'c':{'worse':True,'min_2018':6,'min_2022':4},'d':{'worse':False,'min_2018':7,'min_2022':5}}; assert is_safety_drop(5,4) and not is_safety_drop(7,5); m=evaluate_metrics(['a','b'],o,{'a':10.0,'b':10.0,'c':10.0,'d':10.0}); assert m.tp==1 and m.fp==1 and abs(m.recall-0.5)<1e-12 and abs(m.weighted_recall-0.5)<1e-12; print('a worse (5->4), d not (7->5); recall 0.5, weighted recall 0.5')"`

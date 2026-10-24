@@ -14,6 +14,7 @@ Conventions (per requirements.md):
 """
 
 import logging
+from dataclasses import dataclass
 
 import matplotlib
 
@@ -440,6 +441,78 @@ def _z(x):
     sd = x.std()
     return (x - x.mean()) / sd if sd > 0 else np.zeros_like(x)
 
+
+# ---------------------------------------------------------------------------
+# Algorithm 6: evaluate_metrics (R10)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EvaluationMetrics:
+    """Per (method, budget) evaluation record (R10, design Data Model).
+
+    Unweighted and weighted metrics are always separate (R10.3); score is
+    never a weight. cost_total is left NaN here: it needs candidates and
+    county_fee, so run_backtest fills it in via cost_accounting (R4.2).
+    """
+    tp: int = 0
+    fp: int = 0
+    weighted_tp: float = 0.0
+    weighted_fp: float = 0.0
+    recall: float = 0.0
+    weighted_recall: float = 0.0
+    count_selected: int = 0
+    count_pool: int = 0
+    count_worse_in_pool: int = 0
+    cost_total: float = float("nan")
+
+
+def evaluate_metrics(selected_ids, outcomes, adt_dict):
+    """Evaluate one selection against realized outcomes (Algorithm 6, R10).
+
+    selected_ids: ids in selection order (from pick; duplicates would be a
+      bug — the set here mirrors Algorithm 6's S). outcomes: pool outcomes
+      dict from apply_exclusion_and_label. adt_dict: structure_id -> adt
+      (evaluation weights come from HERE, never from score, R10.3).
+
+    Headline (R10.1):
+      recall          = tp / count of worse bridges in pool  (0.0 if none)
+      weighted_recall = sum log1p(adt) over selected worse /
+                        sum log1p(adt) over all pool worse   (0.0 if 0)
+    Supporting (R10.2): tp, fp, weighted_tp, weighted_fp (weights are
+    log1p(adt) per bridge), count_selected, count_pool, count_worse_in_pool.
+    All metrics are within the candidate pool; cost_total is NaN (filled by
+    run_backtest via cost_accounting).
+    """
+    worse_ids = {sid for sid, o in outcomes.items() if o["worse"]}
+    selected = set(selected_ids)
+
+    tp = fp = 0
+    weighted_tp = weighted_fp = 0.0
+    for sid in selected:
+        w = float(np.log1p(adt_dict[sid]))
+        if sid in worse_ids:
+            tp += 1
+            weighted_tp += w
+        else:
+            fp += 1
+            weighted_fp += w
+
+    total_worse_weight = float(
+        sum(float(np.log1p(adt_dict[sid])) for sid in worse_ids)
+    )
+    return EvaluationMetrics(
+        tp=tp,
+        fp=fp,
+        weighted_tp=weighted_tp,
+        weighted_fp=weighted_fp,
+        recall=tp / len(worse_ids) if worse_ids else 0.0,
+        weighted_recall=(
+            weighted_tp / total_worse_weight if total_worse_weight > 0 else 0.0
+        ),
+        count_selected=len(selected),
+        count_pool=len(outcomes),
+        count_worse_in_pool=len(worse_ids),
+    )
 
 # ---------------------------------------------------------------------------
 # Label (R3): safety drop — defined locally, never imported from model
