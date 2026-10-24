@@ -36,13 +36,26 @@ spec was written to capture the implemented, tested behavior.
     fracture_critical, underwater; same interface as the grouped model.
   - _Requirements: 4_
 
-- [x] 6c. Model selection by held-out AUC
-  - `validate.select_model` + `score` accepting either model.
+- [x] 6c. Model selection by cross-validated AUC
+  - `validate.select_model` (simpler-preferred unless +1 std); `score` accepts
+    either model.
   - _Requirements: 4_
 
 - [x] 6d. Material code→name lookup
   - `model/materials.py` (043A codes) rendered in `score` reasons.
   - _Requirements: 5_
+
+- [x] 6e. months_since_insp feature
+  - Months from `insp_date` to the row's NBI snapshot (April 1), capped at 60,
+    fallback to `insp_freq_mo` when missing; used in the logistic model and the
+    `score` reason ("last inspected N mo ago"). `load_panel` parses `insp_date`.
+  - _Requirements: 4_
+
+- [x] 6f. 5-fold CV grouped by bridge id
+  - `validate.cross_validate` reporting mean ± std AUC/log loss for grouped,
+    logistic(±msi), and baseline; plus selected logistic coefficients and the
+    safety-drop rate by months_since_insp bucket.
+  - _Requirements: 4_
 
 - [x] 7. Implement `score` — p_worse, consequence, cost, score, reason
   - Exact six-column, NaN-free output with a one-line reason per row.

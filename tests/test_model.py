@@ -319,3 +319,46 @@ def test_logistic_model_scores(panel):
     ]
     assert not scored.isna().any().any()
     assert (scored["p_worse"] >= 0).all() and (scored["p_worse"] <= 1).all()
+
+
+# --------------------------------------------------------------------------- #
+# 9. months_since_insp: capped, reason text, missing-date flag.
+# --------------------------------------------------------------------------- #
+
+
+def test_months_since_insp_in_reason_and_capped(rates):
+    """A known insp_date yields 'last inspected N mo ago' (capped at 60); a
+    missing date falls back and says so."""
+    # Inspected ~20 months before asof 2018-04-01 -> "last inspected 20 mo ago".
+    known = {
+        "id": "KNOWN", "year": 2018, "year_built": 1980, "material": "3",
+        "deck": 5.0, "super": 5.0, "sub": 5.0, "culvert": np.nan,
+        "worst_rating": 5.0, "adt": 9000,
+        "insp_date": pd.Timestamp("2016-08-01"), "insp_freq_mo": 24,
+        "fracture_critical": False, "underwater": False, "crosses": "HWY",
+    }
+    # Very old date -> months capped at 60.
+    old = dict(known, id="OLD", insp_date=pd.Timestamp("2000-01-01"))
+    # Missing date -> fallback + flag.
+    missing = dict(known, id="MISS", insp_date=pd.NaT)
+
+    scored = score(pd.DataFrame([known, old, missing]), rates,
+                   asof="2018-04-01").set_index("id")
+
+    assert "last inspected 20 mo ago" in scored.loc["KNOWN", "reason"]
+    assert "last inspected 60 mo ago" in scored.loc["OLD", "reason"]
+    assert "inspection date unknown" in scored.loc["MISS", "reason"]
+
+
+def test_logistic_coefficients_named(panel):
+    """A fitted logistic exposes named coefficients sorted by magnitude, and
+    months_since_insp appears only when the feature is enabled."""
+    with_msi = fit_logistic(panel, 2012, 2016, use_months_since_insp=True)
+    no_msi = fit_logistic(panel, 2012, 2016, use_months_since_insp=False)
+
+    c_with = with_msi.coefficients()
+    assert "months_since_insp" in c_with.index
+    assert "months_since_insp" not in no_msi.coefficients().index
+    # Sorted by descending magnitude.
+    mags = c_with.abs().to_numpy()
+    assert (mags[:-1] + 1e-12 >= mags[1:]).all()

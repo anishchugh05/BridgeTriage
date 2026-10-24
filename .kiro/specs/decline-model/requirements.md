@@ -60,23 +60,29 @@ trains on, so the backtest measures the same event.
    the global fallback rate.
 4. NBI "N" (NaN) SHALL NEVER be treated as a rating of 0.
 
-### Requirement 4 — Two models and selection by held-out AUC
+### Requirement 4 — Models, months_since_insp feature, and CV selection
 
 #### Acceptance criteria
 1. A **grouped** model (`fit_decline`) SHALL estimate P(safety drop) by
    material × age band × condition, each small group shrunk toward
    material × condition, then condition alone, then a global rate. No
-   monotonicity clamp is applied (the safety-drop target excludes high-grade
-   slips, so the floor-effect ordering no longer holds).
+   monotonicity clamp is applied.
 2. A **logistic** model (`fit_logistic`) SHALL predict the safety drop from
    condition (one-hot), material (one-hot), age, log ADT, insp_freq_mo,
-   fracture_critical, and underwater, trained on the same 80% split.
-3. `validate.py` SHALL report positives, log loss, and AUC for the grouped
-   model, the logistic model, and the per-condition baseline on the held-out
-   20%.
-4. `score` SHALL use whichever of the grouped/logistic models has the better
-   held-out test AUC.
-5. A horizon drop probability SHALL convert to a per-month hazard via
+   fracture_critical, underwater, and optionally `months_since_insp`.
+3. `months_since_insp` SHALL be the months from `insp_date` to April 1 of the
+   row's year (the NBI snapshot date), capped at 60, falling back to
+   `insp_freq_mo` only when `insp_date` is missing. `score` SHALL compute it to
+   the `asof` date and show "last inspected N mo ago" in the reason (flagging
+   the fallback when the date is missing).
+4. `validate.py` SHALL run 5-fold cross-validation **grouped by bridge id** and
+   report mean ± std of AUC and log loss for: grouped, logistic without
+   `months_since_insp`, logistic with `months_since_insp`, and the per-condition
+   baseline.
+5. `select_model` SHALL pick by mean CV AUC, preferring the simpler model
+   unless a more complex one wins by more than one standard deviation.
+   Complexity order: baseline < grouped < logistic(no msi) < logistic(+ msi).
+6. A horizon drop probability SHALL convert to a per-month hazard via
    `h = -ln(1 - p) / horizon_months` so inspection recency modulates `p_worse`.
 
 ### Requirement 5 — Score each bridge
