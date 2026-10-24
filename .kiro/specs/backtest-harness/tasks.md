@@ -67,7 +67,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R12_
   - Demo: `python -c "from planner.backtest import *; d18,d22,t=make_fake(400,2,0.5,0.5); a18,a22,idx=load_and_validate(d18,d22); c,o,p=apply_exclusion_and_label(a18,a22,idx,5.0); adt={s:v['adt'] for s,v in o.items()}; bs=[0.01,0.02,0.05,0.10,0.20]; sel={'worst_first':{b:pick(score_worst_first(c),b,c,p,5.0) for b in bs},'oldest_first':{b:pick(score_oldest_first(c),b,c,p,5.0) for b in bs},'oracle':{b:pick(score_oracle(o),b,c,p,5.0,rank_by_value_per_cost=True) for b in bs}}; ci=bootstrap_gap_ci(sel,o,adt,'recall'); assert all(ci['worst_first'][b]==(0,0) for b in bs) and all(lo<=hi for m in ci.values() for lo,hi in m.values()); print('worst_first CI (0,0) at every budget; lo<=hi everywhere')"`
 
-- [ ] 11. Property: budget compliance
+- [x] 11. Property: budget compliance
   - Create `planner/properties.py`; `test_budget_compliance()` (no arguments): total_cost ≤ available·(1+1e-9), 100 make_fake datasets, all methods, all budgets (random_avg on 20 test seeds)
   - _Requirements: R14.1_
   - Demo: `python -m pytest planner/properties.py::test_budget_compliance -q`

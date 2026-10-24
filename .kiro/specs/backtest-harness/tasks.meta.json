@@ -120,6 +120,18 @@
         "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
         "timestamp": 1792864814800
       }
+    ],
+    "11. Property: budget compliance": [
+      {
+        "executionId": "f178f060-30e8-4ef5-a3a8-cd7d2a6ee202",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792864895400
+      },
+      {
+        "executionId": "f178f060-30e8-4ef5-a3a8-cd7d2a6ee202",
+        "chatSessionId": "sess_6749578b-add0-465b-893f-3d1f5917aeed",
+        "timestamp": 1792864990168
+      }
     ]
   }
 }
