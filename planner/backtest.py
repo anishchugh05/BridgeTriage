@@ -16,10 +16,6 @@ Conventions (per requirements.md):
 import logging
 from dataclasses import dataclass
 
-import matplotlib
-
-matplotlib.use("Agg")  # headless: figures are saved to files, never shown
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -320,7 +316,24 @@ def pick(scores, budget, candidates, pool_cost_info, county_fee,
     O(n log n) overall. Candidates missing from scores are skipped with a
     logged warning; scores for non-candidates are ignored (R5.7).
     """
-    values = np.asarray(list(scores.values()), dtype=float)
+    if tiebreak not in ("adt", "random"):
+        raise ValueError(
+            'pick: tiebreak must be "adt" or "random"'
+        )
+
+    # Candidates missing from scores are skipped (R5.7); scores keyed by
+    # non-candidates are filtered out before score validation.
+    ids = np.array(
+        [sid for sid in candidates.index if sid in scores], dtype=object
+    )
+    n_skipped = len(candidates) - len(ids)
+    if n_skipped:
+        logger.warning(
+            "pick: %d candidate(s) missing from scores; skipped (R5.7)",
+            n_skipped,
+        )
+
+    values = np.asarray([scores[sid] for sid in ids], dtype=float)
     if not np.isfinite(values).all():
         raise ValueError(
             "pick: all scores must be finite (no NaN/inf) (R5.3)"
@@ -337,17 +350,7 @@ def pick(scores, budget, candidates, pool_cost_info, county_fee,
 
     available = budget * pool_cost_info["total_cost_pool"]
 
-    # Candidates missing from scores are skipped (R5.7); scores keyed by
-    # non-candidates never enter ids and are ignored.
-    ids = np.array([sid for sid in candidates.index if sid in scores])
-    n_skipped = len(candidates) - len(ids)
-    if n_skipped:
-        logger.warning(
-            "pick: %d candidate(s) missing from scores; skipped (R5.7)",
-            n_skipped,
-        )
-
-    keys = np.array([scores[sid] for sid in ids], dtype=float)
+    keys = values.copy()
     inspect_cost = candidates.loc[ids, "inspect_cost"].to_numpy(dtype=float)
     if rank_by_value_per_cost:
         keys = keys / inspect_cost
@@ -1149,6 +1152,11 @@ def plot(results_df, output_path=None, selections=None, outcomes=None,
     outcome-sampling variance only, not selection variance (R12.3) — any
     report of these figures must state that.
     """
+    global plt
+    import matplotlib
+    matplotlib.use("Agg")  # headless: figures are saved to files, never shown
+    import matplotlib.pyplot as plt
+
     if selections is not None and (outcomes is None or adt is None):
         raise ValueError(
             "plot: selections require outcomes and adt "

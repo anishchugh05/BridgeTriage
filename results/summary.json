@@ -1,0 +1,12 @@
+{
+  "decliners": 137,
+  "exclusion_counts": {
+    "duplicate_id": 0,
+    "missing_2022": 91,
+    "missing_yearbuilt_adt": 0,
+    "nan_min_2018": 310,
+    "nan_min_2022": 1,
+    "rebuilt": 393
+  },
+  "pool_size": 4420
+}
