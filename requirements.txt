@@ -4,3 +4,4 @@ ortools
 streamlit
 numpy
 matplotlib
+pytest
