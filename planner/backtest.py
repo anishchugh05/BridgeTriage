@@ -24,7 +24,16 @@ import pandas as pd
 
 BAND_K = 3                # band/CI width multiplier (plots and sanity test)
 TARGET_RATE = 0.15        # target decline rate for noise=0 generation
-BASE_RATE_LOGIT = None    # placeholder; calibrated by simulation in task 2
+# Calibrated by simulation (task 2): at signal=0, noise=1 the latent reduces
+# to BASE_RATE_LOGIT + N(0, 1), so the expected decline rate is
+# E[logistic(BASE_RATE_LOGIT + Z)], independent of bridge features. Exclusions
+# at signal=0 are also independent of the drawn worse labels, so the realized
+# POOL rate (R14.8, measurable only after task 3's apply_exclusion_and_label)
+# matches the pre-exclusion generated rate this value was calibrated against.
+# -2.0 yields a generated decline rate of ~0.156 (E[logistic(B + Z)], Z~N(0,1),
+# confirmed by simulation over 20 seeds at n=5000), inside the required
+# [0.12, 0.22] band (see calibration note in make_fake's docstring).
+BASE_RATE_LOGIT = -2.0
 REL_TOL = 1e-9            # relative tolerance for budget comparisons
 BOOTSTRAP_REPS = 1000
 BOOTSTRAP_SEED = 0
@@ -119,3 +128,142 @@ def load_and_validate(df_2018, df_2022):
 
     index = dict(zip(out22["structure_id"], out22.index))
     return out18, out22, index
+
+# ---------------------------------------------------------------------------
+# Algorithm 9: make_fake synthetic data generator (R13)
+# ---------------------------------------------------------------------------
+
+def _logistic(x):
+    return 1.0 / (1.0 + np.exp(-np.asarray(x, dtype=float)))
+
+
+def _z(x):
+    """Standardize over the dataset; constant columns map to zeros."""
+    x = np.asarray(x, dtype=float)
+    sd = x.std()
+    return (x - x.mean()) / sd if sd > 0 else np.zeros_like(x)
+
+
+def make_fake(n, seed, signal, noise):
+    """Generate a synthetic (df_2018, df_2022, truth) triple (Algorithm 9, R13).
+
+    truth is indexed by structure_id with columns latent, p_decline (R13.1),
+    plus a `worse` column carrying the generator's drawn label (generator
+    internals, used by the generator-consistency property R14.9).
+
+    Every bridge has min_2018 >= 1 and at least one non-NaN 2018 rating
+    (R13.2). Feature term (R13.3):
+        f      = 2.0*z(9 - min_2018) + 1.0*z(age) + 0.5*z(log1p(adt))
+        latent = BASE_RATE_LOGIT + signal*f + noise*N(0, 1)
+    with age = 2018 - year_built and z standardized over the dataset.
+
+    noise == 0: requires signal > 0 (else ValueError); worse = the top
+    round(TARGET_RATE * n) bridges by latent — deterministic, ~15% (R13.4).
+    noise > 0: worse ~ bernoulli(p_decline) (R13.5).
+
+    Rating evolution (R13.6): worse bridges drop by 1..min(3, min_2018) so
+    min_2022 = min_2018 - drop >= 0; non-worse bridges satisfy
+    min_2022 >= min_2018. 2022 rating columns are regenerated consistent
+    with the new min (one column anchored exactly at min_2022).
+
+    Plausible distributions (R13.8): integer ratings 0-9 skewed toward 5-8
+    with ~15% NaN per column, lognormal adt and inspect_cost (positive),
+    ~14 counties, ~2% rebuilt and ~3% missing-from-2022 bridges so the
+    exclusion rules are exercised.
+
+    Calibration note (R13.7): at signal=0, noise=1 the latent is
+    BASE_RATE_LOGIT + N(0, 1), so features do not matter and exclusions
+    (rebuilt / missing / NaN) are independent of the drawn worse labels.
+    BASE_RATE_LOGIT was therefore calibrated against the pre-exclusion
+    generated decline rate (a proxy for the pool rate, measurable only
+    after apply_exclusion_and_label exists): a seed sweep at n=5000 with
+    signal=0, noise=1 gives a mean generated rate of ~0.156, inside the
+    required [0.12, 0.22] band.
+    """
+    if noise == 0 and signal <= 0:
+        raise ValueError("make_fake: noise=0 requires signal > 0 (R13.4)")
+
+    rng = np.random.default_rng(seed)
+
+    structure_ids = np.array([f"S{i:07d}" for i in range(n)])
+    counties = np.array([f"C{c:03d}" for c in rng.integers(0, 14, n)])
+    year_built = rng.integers(1850, 2022, n)
+    adt = rng.lognormal(mean=8.0, sigma=1.0, size=n)          # positive, skewed
+    inspect_cost = 0.5 + rng.lognormal(mean=0.0, sigma=0.5, size=n)  # > 0
+
+    # 2018 ratings: integers 0-9 skewed toward 5-8, ~15% NaN per column.
+    ratings18 = np.clip(np.rint(rng.normal(6.5, 1.5, size=(n, 3))), 0, 9)
+    ratings18[rng.random((n, 3)) < 0.15] = np.nan
+    # At least one non-NaN 2018 rating per bridge (R13.2).
+    all_nan = np.isnan(ratings18).all(axis=1)
+    if all_nan.any():
+        rows = np.flatnonzero(all_nan)
+        ratings18[rows, rng.integers(0, 3, rows.size)] = rng.integers(1, 10, rows.size)
+    # Enforce min_2018 >= 1 for every bridge (R13.2).
+    below_one = ratings18 < 1
+    if below_one.any():
+        ratings18[below_one] = rng.integers(1, 10, int(below_one.sum()))
+    min18 = np.nanmin(ratings18, axis=1)
+
+    # Feature term and latent (R13.3).
+    age = 2018.0 - year_built.astype(float)
+    f = 2.0 * _z(9.0 - min18) + 1.0 * _z(age) + 0.5 * _z(np.log1p(adt))
+    latent = BASE_RATE_LOGIT + signal * f + noise * rng.standard_normal(n)
+    p_decline = _logistic(latent)
+
+    # Draw worse labels (R13.4 / R13.5).
+    if noise == 0:
+        k = int(round(TARGET_RATE * n))
+        worse = np.zeros(n, dtype=bool)
+        worse[np.argsort(-latent, kind="stable")[:k]] = True
+    else:
+        worse = rng.random(n) < p_decline
+
+    # Rating evolution (R13.6).
+    drop_cap = np.minimum(3, min18).astype(int)
+    drop = 1 + np.floor(rng.random(n) * drop_cap)              # uniform 1..cap
+    min22 = np.where(
+        worse,
+        min18 - drop,                                          # >= 0 always
+        np.minimum(9.0, min18 + np.floor(rng.random(n) * 2)),  # min18 or +1
+    )
+
+    # Regenerate 2022 ratings consistent with the new min: every column is
+    # >= min_2022 and one anchored column equals min_2022 exactly.
+    up_cap = np.minimum((9 - min22).astype(int), 3)
+    ratings22 = min22[:, None] + np.floor(
+        rng.random((n, 3)) * (up_cap[:, None] + 1)
+    )
+    anchor = rng.integers(0, 3, n)
+    ratings22[np.arange(n), anchor] = min22
+    nan22 = rng.random((n, 3)) < 0.15
+    nan22[np.arange(n), anchor] = False  # anchor stays non-NaN; min_2022 defined
+    ratings22[nan22] = np.nan
+
+    df_2018 = pd.DataFrame({
+        "structure_id": structure_ids,
+        "county": counties,
+        "year_built": year_built.astype(int),
+        "adt": adt,
+        "deck": ratings18[:, 0],
+        "super": ratings18[:, 1],
+        "sub": ratings18[:, 2],
+        "inspect_cost": inspect_cost,
+    })
+
+    # Exercise exclusions: ~2% rebuilt flags and ~3% rows absent from 2022.
+    rebuilt = rng.random(n) < 0.02
+    keep = rng.random(n) >= 0.03
+    df_2022 = pd.DataFrame({
+        "structure_id": structure_ids,
+        "deck": ratings22[:, 0],
+        "super": ratings22[:, 1],
+        "sub": ratings22[:, 2],
+        "rebuilt": rebuilt,
+    })[keep].reset_index(drop=True)
+
+    truth = pd.DataFrame(
+        {"latent": latent, "p_decline": p_decline, "worse": worse},
+        index=pd.Index(structure_ids, name="structure_id"),
+    )
+    return df_2018, df_2022, truth

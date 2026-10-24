@@ -17,11 +17,11 @@ Property tests use `RANDOM_SEEDS_TEST = range(20)` for random_avg (not 200). All
 try: load_and_validate(bad,b); assert False
 except ValueError: print('deck NaN ok, index ok, inspect_cost=0 rejected')"`
 
-- [ ] 2. Implement make_fake synthetic data generator
+- [x] 2. Implement make_fake synthetic data generator
   - `make_fake` per Algorithm 9 (R13): returns `(df_2018, df_2022, truth)`; min_2018 ≥ 1 and ≥ 1 non-NaN rating per bridge; `f = 2.0*z(9-min_2018) + 1.0*z(age) + 0.5*z(log1p(adt))`; `latent = BASE_RATE_LOGIT + signal*f + noise*N(0,1)`; noise=0 requires signal>0 (else ValueError) and worse = top round(TARGET_RATE*n) by latent with TARGET_RATE = 0.15; worse: min_2022 = min_2018 − drop, drop ∈ 1..min(3, min_2018); non-worse: min_2022 ≥ min_2018
   - Calibrate BASE_RATE_LOGIT by simulation (realized pool rate in [0.12, 0.22] at signal=0, noise=1); store as constant
   - _Requirements: R13_
-  - Demo: `python -c "from planner.backtest import make_fake, TARGET_RATE; d18,d22,t=make_fake(2000,1,1.0,0.0); import numpy as np; k=round(TARGET_RATE*2000); assert (t.latent.nlargest(k).index.isin(d18.structure_id)).all(); mins=np.minimum.reduce([d18.deck,d18.super,d18.sub]); assert (mins.fillna(9)>=1).all() or (np.nanmin(np.vstack([d18.deck.fillna(9),d18.super.fillna(9),d18.sub.fillna(9)]),axis=0)>=1).all(); print('noise=0 top-k deterministic, min_2018>=1 ok'); import traceback
+  - Demo: `python -c "from planner.backtest import make_fake, TARGET_RATE; d18,d22,t=make_fake(2000,1,1.0,0.0); import numpy as np; k=round(TARGET_RATE*2000); assert (t.latent.nlargest(k).index.isin(d18.structure_id)).all(); mins=np.nanmin(np.vstack([d18['deck'].fillna(9),d18['super'].fillna(9),d18['sub'].fillna(9)]),axis=0); assert (mins>=1).all(); print('noise=0 top-k deterministic, min_2018>=1 ok'); import traceback
 try: make_fake(100,2,0.0,0.0); assert False
 except ValueError: print('signal=0,noise=0 rejected')"`
 
