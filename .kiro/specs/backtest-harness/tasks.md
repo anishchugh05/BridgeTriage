@@ -57,7 +57,7 @@ except ValueError: print('random tiebreak without rng rejected')"`
   - _Requirements: R11_
   - Demo: `python -c "from planner.backtest import *; d18,d22,t=make_fake(400,2,0.5,0.5); r=run_backtest(d18,d22,5.0); w=r[(r.method=='worst_first')&(r.budget==0.05)&(~r.is_aggregate)]; assert len(w)==1 and 0.0<=w.recall.iloc[0]<=1.0; print(r[~r.is_aggregate].groupby('method').recall.mean().round(3))"`
 
-- [ ] 9. Implement plot (headline figures)
+- [x] 9. Implement plot (headline figures)
   - `plot(results_df, output_path=None)` per Algorithm 8 (R12): budget-vs-recall and budget-vs-weighted-recall; oracle dashed; random band mean ± BAND_K·std (BAND_K = 3); output_path is a PREFIX — write {prefix}_recall.png and {prefix}_weighted.png and return the two figures; legend, grid, labels
   - _Requirements: R12_
   - Demo: `python -c "import os; from planner.backtest import *; d18,d22,t=make_fake(400,2,0.5,0.5); figs=plot(run_backtest(d18,d22,5.0),'/tmp/fig'); assert len(figs)==2 and os.path.exists('/tmp/fig_recall.png') and os.path.exists('/tmp/fig_weighted.png'); print('2 figures returned and written')"`

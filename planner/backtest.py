@@ -840,3 +840,113 @@ def run_backtest(df_2018, df_2022, county_fee,
     result = pd.DataFrame(rows, columns=list(RESULT_COLUMNS))
     result["is_aggregate"] = result["is_aggregate"].astype(bool)
     return result
+
+# ---------------------------------------------------------------------------
+# Algorithm 8: plot (R12) — headline figures. bootstrap_gap_ci (R12.2) is
+# task 10; it wires into _plot_metric, nothing here computes CIs yet.
+# ---------------------------------------------------------------------------
+
+# Canonical legend/line order; methods outside this list keep their order of
+# appearance after these.
+_METHOD_ORDER = ("worst_first", "oldest_first", "random_avg", "oracle", "model")
+
+
+def _ordered_methods(results_df):
+    """Methods present in results_df, in canonical plot order."""
+    present = list(dict.fromkeys(results_df["method"]))
+    ordered = [m for m in _METHOD_ORDER if m in present]
+    return ordered + [m for m in present if m not in _METHOD_ORDER]
+
+
+def _plot_metric(results_df, metric, ylabel, title):
+    """Draw ONE headline figure (budget vs `metric`) and return its Figure.
+
+    One line per method; oracle dashed (R12.1). random_avg is drawn from its
+    aggregate rows only: the stat="mean" line plus a shaded band of
+    mean +/- BAND_K*std over the per-seed runs (BAND_K = 3, the same constant
+    as sanity property 7, R12.1a). Deterministic methods use their single-run
+    rows (is_aggregate=False); a baseline run under several tiebreaks gets
+    one line per tiebreak value, the tiebreak="random" line coming from the
+    single MEAN row run_backtest reports for it (R11.3).
+
+    Task 10 seam: the bootstrap gap CIs vs worst_first (R12.2,
+    bootstrap_gap_ci; selections fixed, so outcome-sampling variance only,
+    R12.3) will be drawn HERE as per-method error bars — metric="recall" for
+    the recall figure, "weighted_recall" for the weighted figure.
+    """
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for method in _ordered_methods(results_df):
+        sub = results_df[results_df["method"] == method]
+        if method == "random_avg":
+            agg = sub[sub["is_aggregate"]].set_index("budget").sort_index()
+            mean = agg.loc[agg["stat"] == "mean", metric]
+            std = agg.loc[agg["stat"] == "std", metric].reindex(mean.index)
+            budgets = mean.index.to_numpy(dtype=float)
+            center = mean.to_numpy(dtype=float)
+            half = BAND_K * std.to_numpy(dtype=float)
+            (line,) = ax.plot(budgets, center, marker="o", label="random_avg")
+            ax.fill_between(
+                budgets, center - half, center + half,
+                color=line.get_color(), alpha=0.2,
+                label=f"random_avg ± {BAND_K}·std",
+            )
+            continue
+        # Single runs, plus the tiebreak="random" MEAN row when present
+        # (R11.3); deterministic baselines never produce other aggregates.
+        sub = sub[~sub["is_aggregate"] | (sub["stat"] == "mean")]
+        multi = sub["tiebreak"].nunique(dropna=False) > 1
+        for tb, grp in sub.groupby("tiebreak", dropna=False):
+            grp = grp.sort_values("budget")
+            label = f"{method} (tiebreak={tb})" if multi else method
+            style = {"linestyle": "--"} if method == "oracle" else {}
+            ax.plot(
+                grp["budget"].to_numpy(dtype=float),
+                grp[metric].to_numpy(dtype=float),
+                marker="o", label=label, **style,
+            )
+    ax.set_xlabel("Budget (fraction of candidate-pool inspection cost)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    return fig
+
+
+def plot(results_df, output_path=None):
+    """Headline figures for a run_backtest result (Algorithm 8, R12).
+
+    Two figures only — no precision-recall curves: the budget fixes the
+    selection size, so PR curves are degenerate (R12.1):
+      1. budget vs recall (unweighted headline, R10.1);
+      2. budget vs weighted recall (log1p(adt) weights, R10.1).
+    Both figures: one line per method, oracle dashed, random_avg band =
+    mean +/- BAND_K*std over its per-seed runs (BAND_K = 3), legend, grid,
+    axis labels, title (R12.1, R12.4).
+
+    output_path is a PREFIX (R12.4): when given, writes
+    "{output_path}_recall.png" and "{output_path}_weighted.png"; when None,
+    nothing is written. Returns (fig_recall, fig_weighted) either way; the
+    caller owns the open figures.
+
+    The R12.2 bootstrap gap CIs vs worst_first are task 10
+    (bootstrap_gap_ci) and will be wired into both figures inside
+    _plot_metric. Because selections stay fixed, those CIs capture
+    outcome-sampling variance only, not selection variance (R12.3) — any
+    report of these figures must state that.
+    """
+    fig_recall = _plot_metric(
+        results_df, "recall", "Recall",
+        "Budget vs recall (share of pool decliners caught)",
+    )
+    fig_weighted = _plot_metric(
+        results_df, "weighted_recall", "Weighted recall",
+        "Budget vs weighted recall (weights: log1p(adt))",
+    )
+    if output_path is not None:
+        fig_recall.savefig(
+            f"{output_path}_recall.png", dpi=150, bbox_inches="tight"
+        )
+        fig_weighted.savefig(
+            f"{output_path}_weighted.png", dpi=150, bbox_inches="tight"
+        )
+    return fig_recall, fig_weighted
